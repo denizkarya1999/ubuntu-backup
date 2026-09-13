@@ -5,12 +5,12 @@ content on another Ubuntu Desktop computer.
 
 ## Install
 
-Download `ubuntu-backup_1.0.0_all.deb` from
+Download `ubuntu-backup_1.1.0_all.deb` from
 [GitHub Releases](https://github.com/denizkarya1999/ubuntu-backup/releases/latest).
 Open the downloaded package with your software installer, or run:
 
 ```sh
-sudo apt install ./ubuntu-backup_1.0.0_all.deb
+sudo apt install ./ubuntu-backup_1.1.0_all.deb
 ```
 
 Launch **Ubuntu Backup** from the applications menu. Run it as your normal user.
@@ -24,7 +24,7 @@ app updates, but not for backing up or restoring files.
 ## From the old computer to the new one
 
 1. Open **Back up** on the old computer. Choose GNOME preferences and the app list.
-2. Review the configuration folders. Use **Add files** or **Add folder** to select
+2. Review the **App configurations** tab. In **Personal files**, use **Add files** or **Add folder** to select
    personal content inside your home folder. Nothing in Documents, Pictures,
    Downloads, or other personal folders is included unless you select it.
 3. Close affected applications, then choose **Create backup**. Save the `.ubackup`
@@ -34,6 +34,16 @@ app updates, but not for backing up or restoring files.
    You can deselect any saved path or app. Only checked items are restored.
 6. Choose **Restore selected items**. After restoring GNOME preferences, sign out
    and sign back in. Open restored applications and check their settings.
+
+The interface uses a dark theme, including the file pickers and activity report.
+Dot-prefixed files and folders are hidden in file pickers and cannot be added to
+the personal-file list. App configurations have their own tab with readable names
+instead of hidden paths. This is a browsing preference: selecting a personal
+folder still includes its regular hidden contents, and configuration backup and
+restore remain available. Backups from version 1.0.0 remain compatible.
+
+**About Us** shows the app name, installed version, developer, development agent,
+programming language, interface technologies, and license.
 
 ## What transfers
 
@@ -117,7 +127,7 @@ signed with a project signing key.
 python3 -m ubuntu_backup
 python3 -m unittest discover -s tests -v
 python3 build.py
-dpkg-deb --info dist/ubuntu-backup_1.0.0_all.deb
+dpkg-deb --info dist/ubuntu-backup_1.1.0_all.deb
 ```
 
 For the headless GTK and isolated GNOME integration tests:

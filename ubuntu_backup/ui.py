@@ -13,18 +13,57 @@ from . import __version__
 from . import apps, core, updates
 
 CSS = b"""
-window { background: #f6f5f4; }
-headerbar { min-height: 48px; }
-.hero { font-size: 28px; font-weight: 800; color: #2e2034; }
-.subtitle { color: #635e67; font-size: 14px; }
+window, dialog { background: #202024; color: #f4f1f5; }
+headerbar { min-height: 48px; background: #29292e; color: #f4f1f5; border-color: #414149; }
+.hero { font-size: 28px; font-weight: 800; color: #faf7fb; }
+.subtitle { color: #c5bdca; font-size: 14px; }
 .section { font-size: 16px; font-weight: bold; }
-.card { background: white; border: 1px solid #dedbdF; border-radius: 10px; padding: 16px; }
+.card { background: #2b2b31; border: 1px solid #47454e; border-radius: 10px; padding: 16px; }
 .accent { background: #e95420; color: white; border-color: #cc4519; font-weight: bold; padding: 9px 18px; }
-.quiet { color: #706a75; }
-.notice { background: #fff0dc; border-radius: 8px; padding: 12px; color: #633d0d; }
+.accent:hover { background: #f66b36; }
+.accent:disabled { background: #603c31; color: #b2a39e; border-color: #61473e; }
+.quiet { color: #bcb4c2; }
+.notice { background: #463c29; border-radius: 8px; padding: 12px; color: #f5d5a4; }
+treeview, textview text { background: #26262b; color: #eeeaf0; }
 treeview { padding: 5px; }
+treeview:selected { background: #723c2a; color: #ffffff; }
+notebook > header { background: #29292e; border-color: #45424b; }
+notebook > stack { background: #222227; border-color: #45424b; }
+viewport { background: transparent; }
+button { background-image: none; background-color: #36353d; color: #f0edf2; border-color: #59535f; text-shadow: none; }
+button:hover { background-color: #45424c; }
+button:checked { background-color: #584238; color: #ffffff; }
+button:disabled { color: #9b929f; }
+entry { background: #29282f; color: #f0edf2; border-color: #59535f; }
+button.link { background: transparent; border-color: transparent; box-shadow: none; }
+button.link, button.link label { color: #ffb08a; }
 progressbar progress { background-color: #e95420; }
 """
+
+
+def visible_personal_path(relative):
+    """Hidden entries are not browsed; selected folders still keep their contents."""
+    return all(not part.startswith(".") for part in Path(relative).parts)
+
+
+def configuration_label(relative):
+    """Keep real paths in the model, but show readable configuration names."""
+    groups = (
+        (".config/", "App settings"),
+        (".local/share/gnome-shell/extensions", "GNOME extensions"),
+        (".local/share/", "Desktop data"),
+        (".var/app/", "Flatpak"),
+        ("snap/", "Snap"),
+    )
+    for prefix, group in groups:
+        if relative == prefix:
+            return group
+        if relative.startswith(prefix):
+            name = " / ".join(part.lstrip(".") for part in relative[len(prefix):].split("/") if part)
+            return f"{name} · {group}" if name else group
+    if not visible_personal_path(relative):
+        return " / ".join(part.lstrip(".") for part in Path(relative).parts) + " · Saved settings"
+    return relative
 
 
 def label(text, style=None):
@@ -50,7 +89,7 @@ def button(text, callback, accent=False):
 
 
 class Selection:
-    def __init__(self, columns):
+    def __init__(self, columns, readable_paths=False):
         self.model = Gtk.ListStore(bool, *([str] * len(columns)))
         self.view = Gtk.TreeView(model=self.model)
         self.view.set_headers_visible(True)
@@ -61,6 +100,8 @@ class Selection:
             renderer = Gtk.CellRendererText()
             renderer.set_property("ellipsize", Pango.EllipsizeMode.END)
             column = Gtk.TreeViewColumn(name, renderer, text=i)
+            if readable_paths and i == 1:
+                column.set_cell_data_func(renderer, self.display_path)
             column.set_resizable(True)
             column.set_expand(True)
             column.set_min_width(110)
@@ -70,6 +111,10 @@ class Selection:
         self.scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self.scroll.add(self.view)
         self.scroll.set_min_content_height(180)
+
+    @staticmethod
+    def display_path(column, renderer, model, iterator, data=None):
+        renderer.set_property("text", configuration_label(model[iterator][1]))
 
     def toggle(self, _, path):
         self.model[path][0] = not self.model[path][0]
@@ -95,8 +140,11 @@ class Window(Gtk.ApplicationWindow):
         self.busy = False
         self.log_lines = []
         self.pending_update = None
+        self.page_actions = {}
         self.test_mode = test_mode
         self.connect("delete-event", self.on_close)
+        # Scoped to this application: do not change the user's desktop theme.
+        Gtk.Settings.get_default().set_property("gtk-application-prefer-dark-theme", True)
         provider = Gtk.CssProvider()
         provider.load_from_data(CSS)
         Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
@@ -112,6 +160,7 @@ class Window(Gtk.ApplicationWindow):
         self.build_backup()
         self.build_restore()
         self.build_updates()
+        self.build_about()
         footer = box(8)
         footer.set_border_width(16)
         self.status = label("Ready", "quiet")
@@ -145,8 +194,20 @@ class Window(Gtk.ApplicationWindow):
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroll.add(page)
-        self.stack.add_titled(scroll, name, name)
+        frame = box(0)
+        frame.pack_start(scroll, True, True, 0)
+        actions = box(0)
+        frame.pack_start(actions, False, False, 0)
+        self.page_actions[name] = actions
+        self.stack.add_titled(frame, name, name)
         return page
+
+    def add_action_row(self, name, row):
+        row.set_margin_start(28)
+        row.set_margin_end(28)
+        row.set_margin_top(12)
+        row.set_margin_bottom(12)
+        self.page_actions[name].pack_start(row, False, False, 0)
 
     def build_backup(self):
         self.backup_page = self.page("Back up", "Make this computer portable",
@@ -160,22 +221,36 @@ class Window(Gtk.ApplicationWindow):
         options.pack_start(self.backup_apps, False, False, 0)
         options.get_style_context().add_class("card")
         self.backup_page.pack_start(options, False, False, 0)
-        self.backup_page.pack_start(label("Files and configuration folders", "section"), False, False, 0)
+        notebook = Gtk.Notebook()
+        personal_box = box(10)
+        personal_box.set_border_width(10)
         toolbar = box(8, True)
         toolbar.pack_start(button("Add files…", lambda _: self.choose_personal(False)), False, False, 0)
         toolbar.pack_start(button("Add folder…", lambda _: self.choose_personal(True)), False, False, 0)
         toolbar.pack_start(button("Select all", lambda _: self.backup_selection.set_all(True)), False, False, 0)
         toolbar.pack_start(button("Clear selection", lambda _: self.backup_selection.set_all(False)), False, False, 0)
-        toolbar.pack_end(button("Rescan", lambda _: self.scan()), False, False, 0)
-        self.backup_page.pack_start(toolbar, False, False, 0)
+        personal_box.pack_start(toolbar, False, False, 0)
         self.backup_selection = Selection(["File or folder (inside your home)", "Contents"])
-        self.backup_page.pack_start(self.backup_selection.scroll, True, True, 0)
+        personal_box.pack_start(self.backup_selection.scroll, True, True, 0)
+        notebook.append_page(personal_box, Gtk.Label(label="Personal files"))
+        config_box = box(10)
+        config_box.set_border_width(10)
+        config_box.pack_start(label("Choose the application settings and desktop customizations to save.", "quiet"), False, False, 0)
+        config_toolbar = box(8, True)
+        self.config_selection = Selection(["Configuration", "Contents"], readable_paths=True)
+        config_toolbar.pack_start(button("Select all", lambda _: self.config_selection.set_all(True)), False, False, 0)
+        config_toolbar.pack_start(button("Clear selection", lambda _: self.config_selection.set_all(False)), False, False, 0)
+        config_toolbar.pack_end(button("Rescan", lambda _: self.scan()), False, False, 0)
+        config_box.pack_start(config_toolbar, False, False, 0)
+        config_box.pack_start(self.config_selection.scroll, True, True, 0)
+        notebook.append_page(config_box, Gtk.Label(label="App configurations"))
+        self.backup_page.pack_start(notebook, True, True, 0)
         self.backup_page.pack_start(label("Close apps before backing up their configurations. Backups are not encrypted; selected app profiles may include signed-in sessions. Keep the file private.", "quiet"), False, False, 0)
         self.inventory_label = label("Reading this computer…", "quiet")
         self.backup_page.pack_start(self.inventory_label, False, False, 0)
         row = box(8, True)
         row.pack_end(button("Create backup…", self.backup, True), False, False, 0)
-        self.backup_page.pack_start(row, False, False, 0)
+        self.add_action_row("Back up", row)
 
     def build_restore(self):
         self.restore_page = self.page("Restore", "Feel at home on your new computer",
@@ -193,7 +268,7 @@ class Window(Gtk.ApplicationWindow):
         self.restore_page.pack_start(self.restore_gnome, False, False, 0)
         self.restore_page.pack_start(self.rewrite, False, False, 0)
         notebook = Gtk.Notebook()
-        self.restore_selection = Selection(["File or folder", "Backup contents"])
+        self.restore_selection = Selection(["File, folder, or configuration", "Backup contents"], readable_paths=True)
         file_box = box(8)
         file_box.set_border_width(10)
         tools = box(8, True)
@@ -217,7 +292,7 @@ class Window(Gtk.ApplicationWindow):
         self.restore_page.pack_start(label("Use a backup you trust, and close the apps being restored. Personal files keep their exact contents. Sign out and back in after restoring GNOME settings.", "quiet"), False, False, 0)
         row = box(8, True)
         row.pack_end(button("Restore selected items…", self.restore, True), False, False, 0)
-        self.restore_page.pack_start(row, False, False, 0)
+        self.add_action_row("Restore", row)
 
     def build_updates(self):
         page = self.page("Updates", "Ubuntu Backup stays up to date",
@@ -245,6 +320,32 @@ class Window(Gtk.ApplicationWindow):
         page.pack_start(Gtk.LinkButton(uri=updates.RELEASES, label="View releases and source code on GitHub"), False, False, 0)
         page.pack_start(label("Made for Ubuntu Desktop", "section"), False, False, 12)
         page.pack_start(label("Personal files and selected user configurations are portable. Package availability, GNOME extensions, hardware settings, and third-party app compatibility depend on the destination Ubuntu release. System services, /etc configuration, SSH keys, keyrings, and app passwords are not migrated automatically.", "quiet"), False, False, 0)
+
+    def build_about(self):
+        page = self.page("About Us", "Ubuntu Backup",
+                         "Back up on one Ubuntu computer. Restore on another.")
+        self.about_details = {
+            "App name": "Ubuntu Backup",
+            "Version": __version__,
+            "Developer": "Deniz K. Acikbas (@denizkarya1999)",
+            "Agent used": "OpenAI Codex",
+            "Programming language": "Python",
+            "Interface and assets": "GTK 3 · CSS styling · SVG graphics",
+            "License": "MIT · Open source",
+        }
+        grid = Gtk.Grid(column_spacing=32, row_spacing=20)
+        grid.get_style_context().add_class("card")
+        for row, (name, value) in enumerate(self.about_details.items()):
+            caption = label(name, "quiet")
+            caption.set_valign(Gtk.Align.START)
+            detail = label(value)
+            detail.set_hexpand(True)
+            grid.attach(caption, 0, row, 1, 1)
+            grid.attach(detail, 1, row, 1, 1)
+        page.pack_start(grid, False, False, 0)
+        page.pack_start(Gtk.LinkButton(uri=f"https://github.com/{updates.REPOSITORY}",
+                                     label="Source code and project on GitHub"), False, False, 0)
+        page.pack_start(label("Ubuntu Backup is an independent project and is not an official Canonical product.", "quiet"), False, False, 0)
 
     def log(self, text):
         def append():
@@ -299,10 +400,10 @@ class Window(Gtk.ApplicationWindow):
             return core.discover_configs(self.home), core.scan_inventory(self.log)
         def done(result):
             configs, self.inventory = result
-            existing = {row[1] for row in self.backup_selection.model}
+            existing = {row[1] for row in self.config_selection.model}
             for item in configs:
                 if item["path"] not in existing:
-                    self.backup_selection.model.append([item["selected"], item["path"],
+                    self.config_selection.model.append([item["selected"], item["path"],
                         "App profile · may contain private data" if item["sensitive"] else "User configuration / appearance"])
             counts = " · ".join(f"{len(self.inventory[x])} {x.upper() if x == 'apt' else x.title()}" for x in ("apt", "snap", "flatpak"))
             self.inventory_label.set_text(counts + (" · Some inventory checks failed; see activity" if self.inventory["warnings"] else ""))
@@ -313,6 +414,7 @@ class Window(Gtk.ApplicationWindow):
         dialog = Gtk.FileChooserDialog(title=title, transient_for=self, action=action)
         dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Select", Gtk.ResponseType.OK)
         dialog.set_select_multiple(multiple)
+        dialog.set_show_hidden(False)
         if pattern:
             filter_ = Gtk.FileFilter()
             filter_.set_name("Ubuntu Backup (*.ubackup)")
@@ -333,6 +435,9 @@ class Window(Gtk.ApplicationWindow):
         for filename in selected:
             try:
                 relative = str(Path(filename).absolute().relative_to(self.home.resolve()))
+                if not visible_personal_path(relative):
+                    self.message("Hidden files are not listed", "Use App configurations to choose saved application settings.")
+                    continue
                 core.target_path(self.home, relative)
                 if relative not in existing:
                     self.backup_selection.model.append([True, relative, "Personal folder" if folder else "Personal file"])
@@ -341,7 +446,7 @@ class Window(Gtk.ApplicationWindow):
                 self.message("Choose a file inside your home folder", str(e))
 
     def backup(self, _):
-        roots = self.backup_selection.selected()
+        roots = list(dict.fromkeys(self.backup_selection.selected() + self.config_selection.selected()))
         personal = [row[1] for row in self.backup_selection.model if row[0] and row[2].startswith("Personal")]
         gnome, include_apps = self.backup_gnome.get_active(), self.backup_apps.get_active()
         if not roots and not gnome and not include_apps:

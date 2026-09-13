@@ -1,20 +1,19 @@
-Ubuntu Backup is a native desktop app for moving files, app configurations, and
-GNOME preferences between Ubuntu computers, including different manufacturers
-such as Lenovo and Dell.
+Ubuntu Backup 1.1.0 improves the desktop interface:
 
-- Choose individual personal files or folders to back up.
-- Save GNOME preferences, app configurations, themes, icons, fonts and extensions.
-- Restore selected content on another computer and adapt configuration home paths.
-- Review and install saved APT, Snap and Flatpak apps from destination sources.
-- Verify archive checksums and undo overwritten configurations with a recovery copy.
-- Automatically download verified updates inside the app, with Ubuntu authentication.
+- Dark theme throughout the app, file pickers, dialogs, and activity report.
+- Hidden dot-prefixed entries are no longer shown in file pickers or added to the personal-file list.
+- Personal files and app configurations have separate tabs. Configuration choices use readable names instead of hidden paths.
+- New **About Us** screen with app name, live version, developer, agent used, Python, GTK 3, CSS, and SVG details.
 
-Download the `.deb` below and open it with your Ubuntu software installer, or run
-`sudo apt install ./ubuntu-backup_1.0.0_all.deb`. Install the app on both computers.
-Use **Back up** on the source computer and **Restore** on the destination.
+Backup and restore formats are unchanged; existing `.ubackup` files are compatible.
+Hidden files inside a selected folder remain part of its backup. This update changes
+what is displayed, not the saved contents of selected folders.
 
-Designed for Ubuntu Desktop 22.04 and later; using the same release on both
-computers is recommended. Personal file archives are not encrypted. Close affected
-apps before copying their profiles, and keep backups private. Drivers and machine
-configuration remain the destination computer's responsibility. Custom repositories
-and some app sign-ins need separate setup. See the README for the supported scope.
+Existing installations can receive this release through **Updates**, or download
+`ubuntu-backup_1.1.0_all.deb` below and install it with:
+
+```sh
+sudo apt install ./ubuntu-backup_1.1.0_all.deb
+```
+
+Close and reopen Ubuntu Backup after upgrading.
