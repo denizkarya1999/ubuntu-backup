@@ -61,7 +61,8 @@ with tempfile.TemporaryDirectory(prefix="ubuntu-backup-ui-test-") as directory:
     combined = core.Bundle(base / "combined.ubackup")
     assert set(combined.manifest["roots"]) == {"Documents/report.txt", ".config/example"}
     assert combined.manifest["personal_roots"] == ["Documents/report.txt"]
-    assert combined.files["home/.config/example/preferences"]["path"].read_text() == "Saved app preferences"
+    saved = {name: reader.read() for name, reader in combined.iter_files(["home/.config/example/preferences"])}
+    assert saved["home/.config/example/preferences"] == b"Saved app preferences"
     combined.close()
     window.backup_gnome.set_active(True)
     window.backup_apps.set_active(True)

@@ -3,14 +3,26 @@
 A native Linux desktop app to back up an Ubuntu computer and restore selected
 content on another Ubuntu Desktop computer.
 
+## Screenshots
+
+Real application screens using demonstration files, captured with version 1.1.1.
+
+| Back up | App configurations |
+| --- | --- |
+| ![Dark backup screen with selected personal files](docs/screenshots/backup.png) | ![App settings shown with readable names](docs/screenshots/configurations.png) |
+| Restore | About Us |
+| ![Selective restore screen](docs/screenshots/restore.png) | ![About Us with app and developer details](docs/screenshots/about.png) |
+
+[View all full-size screenshots, including Updates](docs/screenshots/).
+
 ## Install
 
-Download `ubuntu-backup_1.1.0_all.deb` from
+Download `ubuntu-backup_1.1.1_all.deb` from
 [GitHub Releases](https://github.com/denizkarya1999/ubuntu-backup/releases/latest).
 Open the downloaded package with your software installer, or run:
 
 ```sh
-sudo apt install ./ubuntu-backup_1.1.0_all.deb
+sudo apt install ./ubuntu-backup_1.1.1_all.deb
 ```
 
 Launch **Ubuntu Backup** from the applications menu. Run it as your normal user.
@@ -98,14 +110,24 @@ later edits to those affected files. Package installations are not undone. Resto
 errors trigger a configuration rollback; interrupted operations can be undone on
 the next launch. Recovery files remain until you remove them yourself.
 
-A backup is limited to 200,000 files and 64 GiB of uncompressed content. Restore
-verification uses temporary disk space for the uncompressed backup. Allow space
-for the archive, verification copy, restored files, and recovery copy. Close apps
-first; files that change while being read cause the backup to fail rather than
-silently create an inconsistent copy. This is file-level copying, not a snapshot
-of a running application. Extended attributes, ACLs and sparse-file layout are
-not preserved. Files or folders on external drives must first be copied into your
-home folder to be selected.
+There is no fixed archive-size or file-count cap. Large files are read and written
+in chunks, and verification streams through the compressed backup without
+unpacking all its contents into temporary storage. The file index and selections
+still use memory proportional to the number of files.
+
+Allow disk space for the compressed backup on the source and the selected restored
+files plus recovery copies on the destination. The app publishes completed backups
+without a second full copy on supported Ubuntu filesystems; unusual filesystems
+may require a compatibility copy. Actual free space, filesystem file-size limits,
+and available memory remain practical limits.
+
+Keep the backup drive connected until restoration finishes. Selected files are
+checked again as they are restored; a changed archive is rejected, and a restore
+error triggers recovery. Close apps first; files that change while being read
+cause the backup to fail rather than silently create an inconsistent copy. This is
+file-level copying, not a snapshot of a running application. Extended attributes,
+ACLs and sparse-file layout are not preserved. Files or folders on external drives
+must first be copied into your home folder to be selected.
 
 The activity panel shows errors and unavailable apps, and **Save report** exports
 the log. Reports may contain local file paths; review them before sharing.
@@ -127,7 +149,7 @@ signed with a project signing key.
 python3 -m ubuntu_backup
 python3 -m unittest discover -s tests -v
 python3 build.py
-dpkg-deb --info dist/ubuntu-backup_1.1.0_all.deb
+dpkg-deb --info dist/ubuntu-backup_1.1.1_all.deb
 ```
 
 For the headless GTK and isolated GNOME integration tests:
@@ -135,6 +157,12 @@ For the headless GTK and isolated GNOME integration tests:
 ```sh
 xvfb-run -a python3 tests/gui_smoke.py
 dbus-run-session -- python3 tests/dconf_integration.py
+```
+
+To refresh the screenshots with demonstration data:
+
+```sh
+xvfb-run -a /usr/bin/python3 scripts/capture_screenshots.py
 ```
 
 Those tests use temporary homes and a separate D-Bus/dconf session. Unit tests

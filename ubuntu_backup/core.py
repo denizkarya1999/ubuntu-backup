@@ -1,6 +1,8 @@
 """Backup and restore engine. All home-directory writes run as the user."""
 import contextlib
+import ctypes
 import datetime as dt
+import errno
 import hashlib
 import http.client
 import io
@@ -20,9 +22,8 @@ import uuid
 FORMAT = "ubuntu-backup"
 VERSION = 1
 DCONF = {"gnome": "/org/gnome/", "gtk": "/org/gtk/", "ubuntu": "/com/ubuntu/"}
-MAX_FILES = 200000
-MAX_BYTES = 64 * 1024 ** 3
-MAX_MANIFEST = 32 * 1024 ** 2
+COPY_CHUNK = 1024 * 1024
+PROGRESS_BYTES = 128 * 1024 ** 2
 STATE = ".local/state/ubuntu-backup"
 FORBIDDEN = (".ssh", ".gnupg", ".pki", ".git-credentials", ".config/dconf",
              ".local/share/keyrings", ".config/ubuntu-backup", STATE)
@@ -250,6 +251,7 @@ def scan_inventory(log=lambda x: None):
 
 def collect_files(home, roots, log, personal_roots=()):
     files, seen = [], set()
+    personal_roots = set(personal_roots)
     for root in sorted(set(roots)):
         base = target_path(home, root)
         if not base.exists():
@@ -259,7 +261,7 @@ def collect_files(home, roots, log, personal_roots=()):
                 log(f"Skipped protected location: {rel}")
                 return
             safe_relative(rel)
-            personal = any(rel == x or rel.startswith(x + "/") for x in personal_roots)
+            personal = selected_path(rel, personal_roots)
             if not personal and (path.name in SKIP_NAMES or path.name.endswith((".lock", ".sock"))):
                 return
             st = path.lstat()
@@ -275,9 +277,50 @@ def collect_files(home, roots, log, personal_roots=()):
             else:
                 log(f"Skipped special file: {rel}")
         visit(base, root)
-    if len(files) > MAX_FILES or sum(st.st_size for _, _, st in files) > MAX_BYTES:
-        raise TransferError("Selection exceeds the 200,000-file / 64 GiB archive limit")
     return files
+
+
+def selected_path(relative, roots):
+    """Check selected ancestors without scanning every root for every file."""
+    while relative:
+        if relative in roots:
+            return True
+        relative, separator, _ = relative.rpartition("/")
+        if not separator:
+            break
+    return False
+
+
+def publish_archive(temporary, destination):
+    """Publish without a second full copy or overwriting an existing backup."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(libc, "renameat2", None)
+    if rename is not None:
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        if rename(-100, os.fsencode(temporary), -100, os.fsencode(destination), 1) == 0:
+            return
+        error = ctypes.get_errno()
+        if error not in (errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP):
+            raise OSError(error, os.strerror(error), str(destination))
+    # Older/network filesystems may lack rename flags. Hard linking also creates
+    # the destination exclusively without duplicating its contents.
+    try:
+        os.link(temporary, destination)
+    except OSError as e:
+        if e.errno not in (errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS):
+            raise
+        # Last-resort compatibility: copy only when neither atomic operation is
+        # supported. A failed copy removes only the new file created here.
+        with open(temporary, "rb") as source, open(destination, "xb") as output:
+            os.chmod(destination, 0o600)
+            try:
+                shutil.copyfileobj(source, output, COPY_CHUNK)
+                output.flush()
+                os.fsync(output.fileno())
+            except BaseException:
+                Path(destination).unlink(missing_ok=True)
+                raise
 
 
 def create_backup(destination, home, roots, inventory, include_gnome=True, log=lambda x: None, personal_roots=()):
@@ -321,9 +364,15 @@ def create_backup(destination, home, roots, inventory, include_gnome=True, log=l
                     info.mtime = int(st.st_mtime)
                     digest = hashlib.sha256()
                     class Reader:
+                        count = 0
+                        reported = 0
                         def read(self, size=-1):
                             data = source.read(size)
                             digest.update(data)
+                            self.count += len(data)
+                            if self.count - self.reported >= PROGRESS_BYTES:
+                                self.reported = self.count
+                                log(f"Saving {relative}: {self.count / 1024 ** 3:.1f} / {st.st_size / 1024 ** 3:.1f} GiB")
                             return data
                     archive.addfile(info, Reader())
                     end = os.fstat(source.fileno())
@@ -331,70 +380,98 @@ def create_backup(destination, home, roots, inventory, include_gnome=True, log=l
                         raise TransferError(f"File changed during backup; close its app and retry: {relative}")
                     manifest["entries"][name] = {"size": st.st_size, "sha256": digest.hexdigest(), "mode": info.mode, "mtime": info.mtime}
                 if index % 100 == 0:
-                    log(f"Saving configuration files: {index + 1} / {len(files)}")
+                    log(f"Saving files: {index + 1} / {len(files)}")
             data = json_bytes(manifest)
-            if len(data) > MAX_MANIFEST:
-                raise TransferError("Archive file index is too large")
             info = tarfile.TarInfo("manifest.json")
             info.size, info.mode = len(data), 0o600
             archive.addfile(info, io.BytesIO(data))
-        # Exclusive creation protects an existing file if another process created it meanwhile.
-        with open(temporary, "rb") as source, open(destination, "xb") as output:
-            os.chmod(destination, 0o600)
-            try:
-                shutil.copyfileobj(source, output)
-                output.flush()
-                os.fsync(output.fileno())
-            except BaseException:
-                destination.unlink(missing_ok=True)
-                raise
+        with open(temporary, "rb+") as output:
+            os.fsync(output.fileno())
+        publish_archive(temporary, destination)
         log(f"Backup saved: {destination}")
         return manifest
     finally:
         Path(temporary).unlink(missing_ok=True)
 
 
+class VerifiedReader:
+    """Check streamed contents before atomic_copy can publish a restored file."""
+    def __init__(self, source, entry, name, log=lambda _: None):
+        self.source, self.entry, self.name = source, entry, name
+        self.digest = hashlib.sha256()
+        self.count = 0
+        self.reported = 0
+        self.log = log
+
+    def read(self, size=-1):
+        data = self.source.read(size)
+        self.count += len(data)
+        self.digest.update(data)
+        if self.count - self.reported >= PROGRESS_BYTES:
+            self.reported = self.count
+            self.log(f"Restoring {self.name[5:]}: {self.count / 1024 ** 3:.1f} / {self.entry['size'] / 1024 ** 3:.1f} GiB")
+        if not data or self.count >= self.entry["size"]:
+            self.verify()
+        return data
+
+    def verify(self):
+        if self.count != self.entry["size"] or self.digest.hexdigest() != self.entry["sha256"]:
+            raise TransferError(f"Backup checksum mismatch or incomplete entry: {self.name}")
+
+
 class Bundle:
-    """Validate every member and checksum before making any user-home changes."""
+    """Verify in a streaming pass; read selected contents again when restoring."""
     def __init__(self, filename, log=lambda x: None):
-        self.temporary = tempfile.TemporaryDirectory(prefix="ubuntu-backup-")
-        self.folder = Path(self.temporary.name)
+        self.source = None
         self.files = {}
         self.manifest = None
         try:
-            total = 0
+            self.source = open(filename, "rb")
+            self.signature = self._signature()
             seen = set()
-            with tarfile.open(filename, "r:gz") as archive:
+            index_budget = 16 * 1024 ** 2
+            with tarfile.open(fileobj=self.source, mode="r|gz") as archive:
                 for member in archive:
                     name = member.name
                     if name in seen or not member.isfile() or member.size < 0:
                         raise TransferError("Archive contains duplicate names or non-regular files")
                     seen.add(name)
-                    if len(seen) > MAX_FILES + 4:
-                        raise TransferError("Too many archive entries")
                     if name == "manifest.json":
-                        if member.size > MAX_MANIFEST:
-                            raise TransferError("Archive manifest is too large")
+                        # The index budget grows with actual payload entries;
+                        # this is not a total-data or file-count cap. Generated
+                        # archives put the manifest last, after all file headers.
+                        if member.size > index_budget:
+                            raise TransferError("Archive file index is disproportionate to its contents")
+                        with archive.extractfile(member) as source:
+                            self.manifest = json.load(source)
+                        continue
                     elif name.startswith("home/"):
                         safe_relative(name[5:])
                     elif name not in {f"settings/{x}.ini" for x in DCONF}:
                         raise TransferError(f"Unexpected archive member: {name}")
-                    total += member.size
-                    if total > MAX_BYTES or member.size > shutil.disk_usage(self.folder).free - 64 * 1024 ** 2:
-                        raise TransferError("Not enough temporary disk space, or archive exceeds 64 GiB")
                     if name.startswith("settings/") and member.size > 16 * 1024 ** 2:
                         raise TransferError("Settings entry is too large")
-                    target = self.folder / str(len(seen))
                     digest = hashlib.sha256()
-                    with archive.extractfile(member) as source, open(target, "xb") as output:
-                        while chunk := source.read(1024 * 1024):
-                            output.write(chunk)
+                    count = 0
+                    reported = 0
+                    with archive.extractfile(member) as source:
+                        while chunk := source.read(COPY_CHUNK):
+                            count += len(chunk)
                             digest.update(chunk)
-                    self.files[name] = {"path": target, "size": member.size, "mtime": member.mtime,
+                            if count - reported >= PROGRESS_BYTES:
+                                reported = count
+                                log(f"Verifying {name[5:]}: {count / 1024 ** 3:.1f} / {member.size / 1024 ** 3:.1f} GiB")
+                    if count != member.size:
+                        raise TransferError(f"Incomplete archive entry: {name}")
+                    self.files[name] = {"size": member.size, "mtime": member.mtime,
                                         "sha256": digest.hexdigest(), "mode": member.mode & 0o777}
+                    index_budget += len(name.encode("utf-8")) * 6 + 1024
+                    # Avoid retaining a second copy of every TarInfo object.
+                    archive.members.clear()
                     if len(seen) % 250 == 0:
                         log(f"Verifying archive: {len(seen):,} files")
             self._validate()
+            self.assert_unchanged()
         except Exception as e:
             self.close()
             if isinstance(e, TransferError):
@@ -402,20 +479,21 @@ class Bundle:
             raise TransferError(f"Cannot read backup: {e}") from e
 
     def _validate(self):
-        if "manifest.json" not in self.files:
+        if self.manifest is None:
             raise TransferError("Missing archive manifest")
-        m = json.loads(self.files.pop("manifest.json")["path"].read_text())
+        m = self.manifest
         if not isinstance(m, dict) or m.get("format") != FORMAT or m.get("version") != VERSION:
             raise TransferError("Unsupported backup format or version")
         if not isinstance(m.get("entries"), dict) or set(m["entries"]) != set(self.files):
             raise TransferError("Archive does not match its file index")
         roots = m.get("roots")
-        if not isinstance(roots, list) or len(roots) > 10000:
+        if not isinstance(roots, list):
             raise TransferError("Invalid configuration selection")
         for root in roots:
             safe_relative(root)
+        root_set = set(roots)
         personal = m.get("personal_roots", [])
-        if not isinstance(personal, list) or not all(isinstance(x, str) and x in roots for x in personal):
+        if not isinstance(personal, list) or not all(isinstance(x, str) and x in root_set for x in personal):
             raise TransferError("Invalid personal-file selection")
         for name, actual in self.files.items():
             expected = m["entries"][name]
@@ -423,7 +501,7 @@ class Bundle:
                 raise TransferError(f"Backup checksum or metadata mismatch: {name}")
             if name.startswith("home/") and expected.get("mtime") != actual["mtime"]:
                 raise TransferError(f"Backup timestamp mismatch: {name}")
-            if name.startswith("home/") and not any(name[5:] == root or name[5:].startswith(root + "/") for root in roots):
+            if name.startswith("home/") and not selected_path(name[5:], root_set):
                 raise TransferError("File outside selected configuration folders")
         settings = m.get("settings")
         if not isinstance(settings, list) or len(set(settings)) != len(settings) or any(x not in DCONF for x in settings):
@@ -437,9 +515,46 @@ class Bundle:
         if not isinstance(m.get("system"), dict) or not isinstance(m.get("inventory"), dict):
             raise TransferError("Invalid system or app inventory")
         self.manifest = m
+        self.files = m["entries"]
+
+    def _signature(self):
+        st = os.fstat(self.source.fileno())
+        return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+
+    def assert_unchanged(self):
+        if self.source is None or self.source.closed or self._signature() != self.signature:
+            raise TransferError("The backup changed after verification. Open the backup again before restoring.")
+
+    def iter_files(self, names, log=lambda _: None):
+        """Yield checked readers in archive order with no extracted staging copy."""
+        self.assert_unchanged()
+        remaining = set(names)
+        if not remaining <= self.files.keys():
+            raise TransferError("Selected file is missing from the backup")
+        self.source.seek(0)
+        with tarfile.open(fileobj=self.source, mode="r|gz") as archive:
+            for member in archive:
+                if member.name in remaining:
+                    expected = self.files[member.name]
+                    if (not member.isfile() or member.size != expected["size"] or
+                            member.mode & 0o777 != expected["mode"] or
+                            member.mtime != expected.get("mtime", 0)):
+                        raise TransferError("The backup changed after verification")
+                    with archive.extractfile(member) as source:
+                        reader = VerifiedReader(source, expected, member.name, log)
+                        yield member.name, reader
+                        reader.verify()
+                    remaining.remove(member.name)
+                archive.members.clear()
+                if not remaining:
+                    break
+        if remaining:
+            raise TransferError("Selected files are missing from the backup")
+        self.assert_unchanged()
 
     def close(self):
-        self.temporary.cleanup()
+        if self.source is not None:
+            self.source.close()
 
 
 def adapt_home(data, old_home, new_home):
@@ -519,7 +634,10 @@ def atomic_copy(destination, source, mode):
 
 def restore_bundle(bundle, home, roots, settings=True, rewrite=True, log=lambda x: None):
     home = Path(home).resolve()
-    if not set(roots) <= set(bundle.manifest["roots"]):
+    bundle.assert_unchanged()
+    roots = set(roots)
+    personal = set(bundle.manifest.get("personal_roots", []))
+    if not roots <= set(bundle.manifest["roots"]):
         raise TransferError("Invalid restore selection")
     with restore_lock(home):
         plan = []
@@ -528,7 +646,7 @@ def restore_bundle(bundle, home, roots, settings=True, rewrite=True, log=lambda 
             if not name.startswith("home/"):
                 continue
             relative = name[5:]
-            if not any(relative == root or relative.startswith(root + "/") for root in roots):
+            if not selected_path(relative, roots):
                 continue
             parts = PurePosixPath(relative).parts
             if (len(parts) >= 3 and parts[0] == "snap" and parts[2] == "current" and
@@ -573,30 +691,38 @@ def restore_bundle(bundle, home, roots, settings=True, rewrite=True, log=lambda 
             save()
             raise
         try:
-            for index, (name, entry, dest) in enumerate(plan):
-                target_path(home, str(dest.relative_to(home)), snap_current=False)
-                missing = []
-                parent = dest.parent
-                while parent != home and not parent.exists():
-                    missing.append(parent)
-                    parent = parent.parent
-                for directory in reversed(missing):
-                    journal["directories"].append(str(directory.relative_to(home)))
-                    save()
-                    directory.mkdir(mode=0o700)
-                personal = bundle.manifest.get("personal_roots", [])
-                is_configuration = name[5:].startswith((".", "snap/")) and not any(name[5:] == x or name[5:].startswith(x + "/") for x in personal)
-                if rewrite and is_configuration and entry["size"] <= 2 * 1024 ** 2:
-                    data = adapt_home(entry["path"].read_bytes(), bundle.manifest["source_home"], str(home))
-                    atomic_write(dest, data, entry["mode"])
-                else:
-                    with open(entry["path"], "rb") as source:
+            plan_by_name = {name: (entry, dest) for name, entry, dest in plan}
+            wanted = set(plan_by_name) | {f"settings/{key}.ini" for key in keys}
+            settings_data = {}
+            completed = 0
+            with contextlib.closing(bundle.iter_files(wanted, log)) as contents:
+                for name, source in contents:
+                    if name.startswith("settings/"):
+                        settings_data[name] = source.read()
+                        continue
+                    entry, dest = plan_by_name[name]
+                    target_path(home, str(dest.relative_to(home)), snap_current=False)
+                    missing = []
+                    parent = dest.parent
+                    while parent != home and not parent.exists():
+                        missing.append(parent)
+                        parent = parent.parent
+                    for directory in reversed(missing):
+                        journal["directories"].append(str(directory.relative_to(home)))
+                        save()
+                        directory.mkdir(mode=0o700)
+                    is_configuration = name[5:].startswith((".", "snap/")) and not selected_path(name[5:], personal)
+                    if rewrite and is_configuration and entry["size"] <= 2 * 1024 ** 2:
+                        data = adapt_home(source.read(), bundle.manifest["source_home"], str(home))
+                        atomic_write(dest, data, entry["mode"])
+                    else:
                         atomic_copy(dest, source, entry["mode"])
-                os.utime(dest, (entry["mtime"], entry["mtime"]))
-                if index % 100 == 0:
-                    log(f"Restoring configurations: {index + 1} / {len(plan)}")
+                    os.utime(dest, (entry["mtime"], entry["mtime"]))
+                    completed += 1
+                    if completed % 100 == 1:
+                        log(f"Restoring files: {completed} / {len(plan)}")
             for key in keys:
-                data = bundle.files[f"settings/{key}.ini"]["path"].read_bytes()
+                data = settings_data[f"settings/{key}.ini"]
                 if rewrite:
                     data = adapt_home(data, bundle.manifest["source_home"], str(home))
                 # Merge saved keys. Unrelated destination keys remain in place.

@@ -1,19 +1,24 @@
-Ubuntu Backup 1.1.0 improves the desktop interface:
+Ubuntu Backup 1.1.1 fixes large backups and adds a screenshot gallery.
 
-- Dark theme throughout the app, file pickers, dialogs, and activity report.
-- Hidden dot-prefixed entries are no longer shown in file pickers or added to the personal-file list.
-- Personal files and app configurations have separate tabs. Configuration choices use readable names instead of hidden paths.
-- New **About Us** screen with app name, live version, developer, agent used, Python, GTK 3, CSS, and SVG details.
+- Removes the hardcoded 64 GiB archive limit and the 200,000-file selection cap.
+- Verifies archives by streaming their contents without extracting a complete temporary copy.
+- Restores selected files in a second pass and checks each file again before publishing it.
+- Saves completed archives without duplicating the entire file on supported Ubuntu filesystems.
+- Shows progress while reading, verifying, and restoring large files.
+- Adds five real app screenshots to the repository and README using demonstration files.
 
-Backup and restore formats are unchanged; existing `.ubackup` files are compatible.
-Hidden files inside a selected folder remain part of its backup. This update changes
-what is displayed, not the saved contents of selected folders.
+Existing backups remain compatible. Keep the backup drive connected while restoring.
+Actual free disk space, filesystem limits, and available memory still apply.
 
-Existing installations can receive this release through **Updates**, or download
-`ubuntu-backup_1.1.0_all.deb` below and install it with:
+Validation includes 130 GiB of sparse-file selection metadata, more than 200,000
+selected entries, streaming round trips, changed-archive detection, and recovery
+from a second-pass checksum failure. The sparse test checks the former size boundary
+without writing a physical 130 GiB test backup.
+
+Use **Updates** in the app, or download `ubuntu-backup_1.1.1_all.deb` below:
 
 ```sh
-sudo apt install ./ubuntu-backup_1.1.0_all.deb
+sudo apt install ./ubuntu-backup_1.1.1_all.deb
 ```
 
-Close and reopen Ubuntu Backup after upgrading.
+Close and reopen the app after upgrading, then retry your backup.

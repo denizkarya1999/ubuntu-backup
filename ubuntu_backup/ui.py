@@ -493,9 +493,20 @@ class Window(Gtk.ApplicationWindow):
         self.bundle, self.plan = result
         m = self.bundle.manifest
         self.restore_selection.model.clear()
+        counts = dict.fromkeys(m["roots"], 0)
+        for name in self.bundle.files:
+            if not name.startswith("home/"):
+                continue
+            relative = name[5:]
+            while relative:
+                if relative in counts:
+                    counts[relative] += 1
+                relative, separator, _ = relative.rpartition("/")
+                if not separator:
+                    break
         for root in m["roots"]:
-            count = sum(name == "home/" + root or name.startswith("home/" + root + "/") for name in self.bundle.files)
-            self.restore_selection.model.append([True, root, f"{count:,} files"])
+            count = counts[root]
+            self.restore_selection.model.append([True, root, f"{count:,} file" + ("s" if count != 1 else "")])
         self.populate_apps()
         self.restore_gnome.set_sensitive(bool(m["settings"]))
         self.restore_gnome.set_active(bool(m["settings"]))

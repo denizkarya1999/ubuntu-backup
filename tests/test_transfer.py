@@ -92,6 +92,96 @@ class TransferTests(unittest.TestCase):
             core.create_backup(self.archive, self.source, [], EMPTY, False)
         self.assertEqual(self.archive.read_bytes(), b"existing")
 
+    def test_selection_accepts_files_and_totals_above_64_gib(self):
+        # Sparse files exercise the real size checks without allocating or
+        # writing 130 GiB to the test runner's disk.
+        for name in ("large-a.img", "large-b.img"):
+            path = self.put(self.source, "Documents/" + name, b"")
+            with path.open("r+b") as stream:
+                stream.truncate(65 * 1024 ** 3)
+        files = core.collect_files(self.source, ["Documents"], lambda _: None)
+        self.assertEqual(len(files), 2)
+        self.assertEqual(sum(st.st_size for _, _, st in files), 130 * 1024 ** 3)
+
+    def test_selection_accepts_more_than_200000_files(self):
+        # A virtual directory checks the count boundary without creating
+        # hundreds of thousands of physical files in CI.
+        class VirtualFile:
+            def __init__(self, index): self.name = f"file-{index:06d}"
+            def __lt__(self, other): return self.name < other.name
+            def lstat(self): return os.stat_result((stat.S_IFREG | 0o600, 0, 0, 1, 0, 0, 1, 0, 0, 0))
+        class VirtualDirectory:
+            name = "Documents"
+            def exists(self): return True
+            def lstat(self): return os.stat_result((stat.S_IFDIR | 0o700, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+            def iterdir(self): return (VirtualFile(i) for i in range(200001))
+        with patch.object(core, "target_path", return_value=VirtualDirectory()):
+            files = core.collect_files(self.source, ["Documents"], lambda _: None)
+        self.assertEqual(len(files), 200001)
+
+    def test_finished_archive_is_published_without_copying_its_bytes(self):
+        temporary = self.base / "partial"
+        temporary.write_bytes(b"complete archive")
+        inode = temporary.stat().st_ino
+        with patch.object(core.shutil, "copyfileobj", side_effect=AssertionError("Archive must not be duplicated")):
+            core.publish_archive(temporary, self.archive)
+        self.assertEqual(self.archive.stat().st_ino, inode)
+        self.assertEqual(self.archive.read_bytes(), b"complete archive")
+
+    def test_publication_does_not_replace_a_racing_destination(self):
+        temporary = self.base / "partial"
+        temporary.write_bytes(b"new backup")
+        self.archive.write_bytes(b"another backup")
+        with self.assertRaises(FileExistsError):
+            core.publish_archive(temporary, self.archive)
+        self.assertEqual(self.archive.read_bytes(), b"another backup")
+
+    def test_verification_does_not_extract_payload_to_temporary_storage(self):
+        self.put(self.source, "Documents/data", b"content" * 300000)
+        core.create_backup(self.archive, self.source, ["Documents"], EMPTY, False)
+        with patch.object(core.tempfile, "TemporaryDirectory", side_effect=AssertionError("No staging directory")), patch.object(core.shutil, "disk_usage", side_effect=AssertionError("No verification disk allocation")):
+            bundle = core.Bundle(self.archive)
+        self.addCleanup(bundle.close)
+        self.assertEqual(bundle.files["home/Documents/data"]["size"], 2100000)
+        core.restore_bundle(bundle, self.target, ["Documents"], settings=False)
+        self.assertEqual((self.target / "Documents/data").read_bytes(), b"content" * 300000)
+
+    def test_archive_changed_after_review_is_rejected_before_restore(self):
+        self.put(self.source, "Documents/a", b"new")
+        self.put(self.target, "Documents/a", b"old")
+        bundle = self.backup(["Documents"])
+        with self.archive.open("ab") as stream:
+            stream.write(b"modified")
+        with self.assertRaisesRegex(core.TransferError, "changed after verification"):
+            core.restore_bundle(bundle, self.target, ["Documents"], settings=False)
+        self.assertEqual((self.target / "Documents/a").read_bytes(), b"old")
+
+    def test_second_pass_checksum_failure_rolls_back_restored_files(self):
+        for name in ("a", "b"):
+            self.put(self.source, "Documents/" + name, b"new")
+            self.put(self.target, "Documents/" + name, b"old")
+        bundle = self.backup(["Documents"])
+        with tarfile.open(self.archive, "r:gz") as archive:
+            contents = [(member, archive.extractfile(member).read()) for member in archive]
+        with tarfile.open(self.archive, "w:gz") as archive:
+            for member, data in contents:
+                archive.addfile(member, io.BytesIO(b"bad" if member.name == "home/Documents/b" else data))
+        # Even if a filesystem's change detection were defeated, every selected
+        # file is re-hashed before being published on the destination.
+        with patch.object(bundle, "assert_unchanged"):
+            with self.assertRaisesRegex(core.TransferError, "checksum mismatch"):
+                core.restore_bundle(bundle, self.target, ["Documents"], settings=False)
+        for name in ("a", "b"):
+            self.assertEqual((self.target / "Documents" / name).read_bytes(), b"old")
+
+    def test_insufficient_destination_space_is_still_reported(self):
+        self.put(self.source, "Documents/a", b"new")
+        bundle = self.backup(["Documents"])
+        with patch.object(core.shutil, "disk_usage", return_value=core.shutil._ntuple_diskusage(100, 99, 1)):
+            with self.assertRaisesRegex(core.TransferError, "Not enough space"):
+                core.restore_bundle(bundle, self.target, ["Documents"], settings=False)
+        self.assertFalse((self.target / "Documents/a").exists())
+
     def test_configuration_caches_symlinks_and_credentials_excluded(self):
         self.put(self.source, ".config/app/Cache/temp")
         self.put(self.source, ".config/app/settings", b"prefs")
