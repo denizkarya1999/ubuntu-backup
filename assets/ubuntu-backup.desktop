@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Ubuntu Backup
+Comment=Back up your desktop and files, then restore them on another computer
+Exec=ubuntu-backup
+Icon=ubuntu-backup
+Terminal=false
+Categories=Utility;Archiving;
+Keywords=backup;restore;migration;Ubuntu;GNOME;files;
+StartupNotify=true

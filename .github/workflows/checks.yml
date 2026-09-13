@@ -1,0 +1,27 @@
+name: Test and build
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install test dependencies
+        run: sudo apt-get update && sudo apt-get install -y python3-gi gir1.2-gtk-3.0 python3-apt dconf-cli xvfb desktop-file-utils
+      - name: Test backup, restore, recovery, and update validation
+        run: /usr/bin/python3 -m unittest discover -s tests -v
+      - name: Test GNOME in an isolated session
+        run: /usr/bin/python3 tests/dconf_integration.py
+      - name: Test GTK interface
+        run: xvfb-run -a /usr/bin/python3 tests/gui_smoke.py
+      - name: Build and validate package
+        run: |
+          /usr/bin/python3 build.py
+          desktop-file-validate assets/ubuntu-backup.desktop
+          dpkg-deb --info dist/*.deb
+          cd dist
+          sha256sum --check SHA256SUMS

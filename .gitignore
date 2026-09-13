@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+dist/
+.venv/
+*.ubackup
+*.deb
+test-output/

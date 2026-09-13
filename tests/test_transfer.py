@@ -1,0 +1,291 @@
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import stat
+import tarfile
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from ubuntu_backup import apps, core, updates
+
+EMPTY = {"apt": [], "snap": [], "flatpak": []}
+
+
+class TransferTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.source = self.base / "lenovo-user"
+        self.target = self.base / "dell-user"
+        self.source.mkdir()
+        self.target.mkdir()
+        self.archive = self.base / "test.ubackup"
+
+    def put(self, home, name, data=b"sample"):
+        p = home / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+        return p
+
+    def backup(self, roots, **kw):
+        core.create_backup(self.archive, self.source, roots, EMPTY, include_gnome=False, **kw)
+        bundle = core.Bundle(self.archive)
+        self.addCleanup(bundle.close)
+        return bundle
+
+    def test_personal_roundtrip_selective_restore_and_undo(self):
+        original = self.put(self.source, "Documents/report.txt", b"my important report")
+        original.chmod(0o640)
+        os.utime(original, (1700000000, 1700000000))
+        self.put(self.source, "Pictures/new photo.jpg", b"\xff\xd8\x00photo")
+        self.put(self.source, "Downloads/not-selected.txt", b"skip")
+        self.put(self.target, "Documents/report.txt", b"previous Dell report")
+        self.put(self.target, "Documents/unrelated.txt", b"keep")
+        bundle = self.backup(["Documents/report.txt", "Pictures/new photo.jpg", "Downloads/not-selected.txt"])
+        recovery = core.restore_bundle(bundle, self.target, ["Documents/report.txt", "Pictures/new photo.jpg"], settings=False)
+        self.assertTrue(Path(recovery).exists())
+        self.assertEqual((self.target / "Documents/report.txt").read_bytes(), b"my important report")
+        self.assertEqual(stat.S_IMODE((self.target / "Documents/report.txt").stat().st_mode), 0o640)
+        self.assertEqual((self.target / "Documents/report.txt").stat().st_mtime, 1700000000)
+        self.assertFalse((self.target / "Downloads/not-selected.txt").exists())
+        self.assertEqual((self.target / "Documents/unrelated.txt").read_bytes(), b"keep")
+        core.undo_last(self.target)
+        self.assertEqual((self.target / "Documents/report.txt").read_bytes(), b"previous Dell report")
+        self.assertFalse((self.target / "Pictures/new photo.jpg").exists())
+
+    def test_different_usernames_rewrite_config_only(self):
+        value = (str(self.source) + "/Documents\n").encode()
+        self.put(self.source, ".config/example/prefs", value)
+        self.put(self.source, "Documents/notes.txt", value)
+        bundle = self.backup([".config/example", "Documents/notes.txt"])
+        core.restore_bundle(bundle, self.target, bundle.manifest["roots"], settings=False)
+        self.assertEqual((self.target / ".config/example/prefs").read_bytes(), (str(self.target) + "/Documents\n").encode())
+        self.assertEqual((self.target / "Documents/notes.txt").read_bytes(), value)
+
+    def test_explicit_personal_hidden_files_never_rewritten_or_cache_filtered(self):
+        value = (str(self.source) + "/exact/path").encode()
+        self.put(self.source, ".personal/Cache/entry", value)
+        self.put(self.source, ".personal/.git/config", value)
+        bundle = self.backup([".personal"], personal_roots=[".personal"])
+        core.restore_bundle(bundle, self.target, [".personal"], settings=False)
+        self.assertEqual((self.target / ".personal/Cache/entry").read_bytes(), value)
+        self.assertEqual((self.target / ".personal/.git/config").read_bytes(), value)
+
+    def test_username_rewrite_does_not_match_a_longer_username(self):
+        data = b"/home/ann/file /home/anna/file file:///home/ann/file"
+        self.assertEqual(core.adapt_home(data, "/home/ann", "/home/bob"), b"/home/bob/file /home/anna/file file:///home/bob/file")
+
+    def test_binary_configuration_preserved(self):
+        value = b"\x00" + str(self.source).encode() + b"/private"
+        self.put(self.source, ".config/app/binary", value)
+        bundle = self.backup([".config/app"])
+        core.restore_bundle(bundle, self.target, [".config/app"], settings=False)
+        self.assertEqual((self.target / ".config/app/binary").read_bytes(), value)
+
+    def test_backup_does_not_overwrite_existing_archive(self):
+        self.archive.write_bytes(b"existing")
+        with self.assertRaises(core.TransferError):
+            core.create_backup(self.archive, self.source, [], EMPTY, False)
+        self.assertEqual(self.archive.read_bytes(), b"existing")
+
+    def test_configuration_caches_symlinks_and_credentials_excluded(self):
+        self.put(self.source, ".config/app/Cache/temp")
+        self.put(self.source, ".config/app/settings", b"prefs")
+        self.put(self.source, ".config/dconf/user", b"secret dconf")
+        (self.source / ".config/app/link").symlink_to("/etc/passwd")
+        bundle = self.backup([".config"])
+        self.assertEqual(set(bundle.files), {"home/.config/app/settings"})
+
+    def test_destination_symlink_is_rejected_before_any_changes(self):
+        self.put(self.source, "Documents/report", b"new")
+        elsewhere = self.base / "outside"
+        elsewhere.mkdir()
+        (self.target / "Documents").symlink_to(elsewhere)
+        bundle = self.backup(["Documents"])
+        with self.assertRaises(core.TransferError):
+            core.restore_bundle(bundle, self.target, ["Documents"], settings=False)
+        self.assertFalse((elsewhere / "report").exists())
+
+    def test_snap_revision_is_mapped_to_destination_revision(self):
+        self.put(self.source, "snap/example/12/settings", b"prefs")
+        (self.source / "snap/example/current").symlink_to("12")
+        (self.target / "snap/example/37").mkdir(parents=True)
+        (self.target / "snap/example/current").symlink_to("37")
+        bundle = self.backup(["snap/example/current"])
+        core.restore_bundle(bundle, self.target, ["snap/example/current"], settings=False)
+        self.assertEqual((self.target / "snap/example/37/settings").read_bytes(), b"prefs")
+        self.assertFalse((self.target / "snap/example/12").exists())
+        core.undo_last(self.target)
+        self.assertFalse((self.target / "snap/example/37/settings").exists())
+
+    def test_escaping_snap_current_is_rejected(self):
+        (self.target / "snap/example").mkdir(parents=True)
+        (self.target / "snap/example/current").symlink_to("../../../outside")
+        with self.assertRaises(core.TransferError):
+            core.target_path(self.target, "snap/example/current/a")
+
+    def test_fresh_snap_can_restore_before_first_launch(self):
+        self.put(self.source, "snap/example/12/settings", b"prefs")
+        (self.source / "snap/example/current").symlink_to("12")
+        bundle = self.backup(["snap/example/current"])
+        with patch.object(core, "list_snaps", return_value=[{"name": "example", "revision": "37"}]):
+            core.restore_bundle(bundle, self.target, ["snap/example/current"], settings=False)
+        self.assertEqual((self.target / "snap/example/37/settings").read_bytes(), b"prefs")
+        self.assertFalse((self.target / "snap/example/current").exists())
+
+    def test_write_failure_rolls_back_prior_files(self):
+        for name in ("a", "b"):
+            self.put(self.source, "Documents/" + name, b"new")
+            self.put(self.target, "Documents/" + name, b"old")
+        bundle = self.backup(["Documents"])
+        real_copy = core.atomic_copy
+        count = 0
+        def fail_second(*args, **kw):
+            nonlocal count
+            count += 1
+            if count == 2:
+                raise OSError("simulated disk failure")
+            return real_copy(*args, **kw)
+        with patch.object(core, "atomic_copy", side_effect=fail_second):
+            with self.assertRaisesRegex(core.TransferError, "original settings recovered"):
+                core.restore_bundle(bundle, self.target, ["Documents"], settings=False)
+        for name in ("a", "b"):
+            self.assertEqual((self.target / "Documents" / name).read_bytes(), b"old")
+
+    def test_recovery_capture_failure_changes_nothing(self):
+        self.put(self.source, "Documents/a", b"new")
+        self.put(self.target, "Documents/a", b"old")
+        bundle = self.backup(["Documents"])
+        with patch.object(core.shutil, "copyfile", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                core.restore_bundle(bundle, self.target, ["Documents"], settings=False)
+        self.assertEqual((self.target / "Documents/a").read_bytes(), b"old")
+
+    def test_root_backup_links_and_traversal_rejected(self):
+        for name in ("../escape", "/etc/passwd", "home/../escape", "home/.ssh/key"):
+            with self.subTest(name=name):
+                path = self.base / "malicious.ubackup"
+                with tarfile.open(path, "w:gz") as archive:
+                    info = tarfile.TarInfo(name)
+                    info.size = 1
+                    archive.addfile(info, io.BytesIO(b"x"))
+                with self.assertRaises(core.TransferError):
+                    core.Bundle(path)
+        for type_ in (tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.FIFOTYPE):
+            with tarfile.open(self.archive, "w:gz") as archive:
+                info = tarfile.TarInfo("home/Documents/attack")
+                info.type = type_
+                info.linkname = "/etc/passwd"
+                archive.addfile(info)
+            with self.assertRaises(core.TransferError):
+                core.Bundle(self.archive)
+
+    def test_checksum_corruption_rejected(self):
+        self.put(self.source, "Documents/a", b"original")
+        bundle = self.backup(["Documents"])
+        m = bundle.manifest
+        bad = self.base / "corrupt.ubackup"
+        with tarfile.open(bad, "w:gz") as archive:
+            for name, data in (("home/Documents/a", b"tampered"), ("manifest.json", core.json_bytes(m))):
+                info = tarfile.TarInfo(name)
+                info.size, info.mode = len(data), 0o644
+                archive.addfile(info, io.BytesIO(data))
+        with self.assertRaisesRegex(core.TransferError, "mismatch"):
+            core.Bundle(bad)
+
+    def test_duplicate_archive_members_rejected(self):
+        with tarfile.open(self.archive, "w:gz") as archive:
+            for _ in range(2):
+                info = tarfile.TarInfo("manifest.json")
+                info.size = 2
+                archive.addfile(info, io.BytesIO(b"{}"))
+        with self.assertRaisesRegex(core.TransferError, "duplicate"):
+            core.Bundle(self.archive)
+
+    def test_simultaneous_restore_blocked(self):
+        with core.restore_lock(self.target):
+            with self.assertRaisesRegex(core.TransferError, "already running"):
+                with core.restore_lock(self.target):
+                    pass
+
+
+class ApplicationTests(unittest.TestCase):
+    def test_option_injection_is_rejected(self):
+        for name in ("--allow-unauthenticated", "vim;reboot", "../bad.deb", "vim=bad", "$(id)"):
+            with self.subTest(name=name), self.assertRaises(core.TransferError):
+                apps.validate_inventory({"apt": [{"name": name}]})
+        with self.assertRaises(core.TransferError):
+            apps.validate_inventory({"snap": [{"name": "hello", "channel": "--dangerous"}]})
+
+    def test_legitimate_names_and_channels(self):
+        apps.validate_inventory({"apt": [{"name": "libstdc++6:amd64"}],
+            "snap": [{"name": "firefox", "channel": "esr/stable", "classic": False}],
+            "flatpak": [{"name": "org.gnome.TextEditor", "branch": "stable", "origin": "flathub", "scope": "user"}]})
+
+    def test_snap_branches_are_not_truncated_by_inventory(self):
+        sample = [{"name": "snap-store", "version": "1", "tracking-channel": "2/stable/ubuntu-26.04", "confinement": "strict", "type": "app"}]
+        with patch.object(core, "list_snaps", return_value=sample), patch.object(core, "run", return_value=b""), patch.object(core.shutil, "which", return_value="/usr/bin/snap"):
+            inventory = core.scan_inventory()
+        self.assertEqual(inventory["snap"][0]["channel"], "2/stable/ubuntu-26.04")
+        apps.validate_inventory(inventory)
+
+    def test_local_snaps_do_not_prevent_file_restore_review(self):
+        apps.validate_inventory({"snap": [{"name": "local-app", "channel": None, "classic": False}]})
+
+    def test_lenovo_hardware_packages_are_not_selected_for_dell(self):
+        names = ["vlc", "nvidia-driver-590", "linux-image-generic", "intel-microcode", "grub-efi-amd64", "oem-somedevice", "broadcom-sta-dkms"]
+        with patch.object(apps, "apt_status", return_value={x: "available" for x in names}):
+            plan = apps.make_plan({"apt": [{"name": x} for x in names]})
+        self.assertEqual([x["app"]["name"] for x in plan if x["selected"]], ["vlc"])
+
+    def test_existing_and_unavailable_apps_are_not_selected(self):
+        with patch.object(apps, "apt_status", return_value={"vim": "installed", "unknown-app": "unavailable"}):
+            plan = apps.make_plan({"apt": [{"name": "vim"}, {"name": "unknown-app"}]})
+        self.assertFalse(any(x["selected"] for x in plan))
+
+    def test_installation_uses_argv_and_no_removal(self):
+        calls = []
+        with patch.object(apps, "execute", side_effect=lambda args, log: calls.append(args)), patch.object(apps, "apt_status", return_value={"vlc": "installed"}):
+            result = apps.install_apps([{"kind": "apt", "app": {"name": "vlc"}}])
+        self.assertIn("--no-remove", calls[0])
+        self.assertEqual(calls[0][-2:], ["--", "vlc"])
+        self.assertEqual(result, [("vlc", "installed")])
+
+
+class UpdateTests(unittest.TestCase):
+    def release(self):
+        base = f"https://github.com/{updates.REPOSITORY}/releases/download/v1.2.0/"
+        return {"tag_name": "v1.2.0", "assets": [
+            {"name": "ubuntu-backup_1.2.0_all.deb", "browser_download_url": base + "ubuntu-backup_1.2.0_all.deb", "size": 3},
+            {"name": "SHA256SUMS", "browser_download_url": base + "SHA256SUMS"}]}
+
+    def test_new_release_is_detected(self):
+        with patch.object(updates, "request", return_value=json.dumps(self.release()).encode()):
+            self.assertEqual(updates.latest()["version"], "1.2.0")
+
+    def test_cross_repository_update_is_rejected(self):
+        release = self.release()
+        release["assets"][0]["browser_download_url"] = "https://evil.example/update.deb"
+        with patch.object(updates, "request", return_value=json.dumps(release).encode()):
+            with self.assertRaises(core.TransferError):
+                updates.latest()
+
+    def test_corrupt_update_is_not_installed(self):
+        data = b"bad"
+        checksum = hashlib.sha256(b"good").hexdigest()
+        update = {"version": "1.2.0", "filename": "ubuntu-backup_1.2.0_all.deb", "url": "unused", "checksums": "unused", "size": 3}
+        with patch.object(updates, "request", side_effect=[(checksum + "  " + update["filename"]).encode(), data]), patch.object(updates, "execute") as execute:
+            with self.assertRaisesRegex(core.TransferError, "checksum failed"):
+                updates.install(update)
+            execute.assert_not_called()
+
+    def test_semantic_version_comparison(self):
+        self.assertGreater(updates.version_tuple("1.10.0"), updates.version_tuple("1.9.0"))
+
+
+if __name__ == "__main__":
+    unittest.main()
