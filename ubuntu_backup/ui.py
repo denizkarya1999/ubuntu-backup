@@ -10,7 +10,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gdk, Gio, GLib, Pango
 
 from . import __version__
-from . import apps, core, updates
+from . import apps, automation, core, updates
 
 CSS = b"""
 window, dialog { background: #202024; color: #f4f1f5; }
@@ -159,6 +159,7 @@ class Window(Gtk.ApplicationWindow):
         main.pack_start(self.stack, True, True, 0)
         self.build_backup()
         self.build_restore()
+        self.build_automatic()
         self.build_updates()
         self.build_about()
         footer = box(8)
@@ -213,7 +214,7 @@ class Window(Gtk.ApplicationWindow):
         self.backup_page = self.page("Back up", "Make this computer portable",
             "Save your desktop preferences, apps, configurations, and the personal files you choose.")
         options = box(8)
-        self.backup_gnome = Gtk.CheckButton(label="GNOME desktop preferences, shortcuts, and appearance")
+        self.backup_gnome = Gtk.CheckButton(label="GNOME preferences, shortcuts, appearance, and extension state")
         self.backup_gnome.set_active(True)
         self.backup_apps = Gtk.CheckButton(label="Installed app list · APT, Snap, and Flatpak")
         self.backup_apps.set_active(True)
@@ -294,6 +295,76 @@ class Window(Gtk.ApplicationWindow):
         row.pack_end(button("Restore selected items…", self.restore, True), False, False, 0)
         self.add_action_row("Restore", row)
 
+    def build_automatic(self):
+        page = self.page("Automatic", "Back up to Google Drive automatically",
+                         "Choose daily or weekly background backups, a Drive folder, and how long old backups are kept.")
+        try:
+            saved = automation.load_config(self.home) if not self.test_mode else {}
+        except core.TransferError:
+            saved = {}
+        connection = box(10)
+        connection.get_style_context().add_class("card")
+        self.drive_uri = saved.get("remote_uri", "")
+        self.drive_label = saved.get("remote_label", "")
+        self.drive_status = label("Google Drive folder selected" if self.drive_uri else "Add Google Drive to Ubuntu", "section")
+        connection.pack_start(self.drive_status, False, False, 0)
+        connection.pack_start(label("Add your Google account in Ubuntu Online Accounts, enable Files, then choose a Drive folder. Your sign-in stays managed by Ubuntu.", "quiet"), False, False, 0)
+        connect_row = box(8, True)
+        connect_row.pack_start(button("Open Online Accounts…", self.open_online_accounts), False, False, 0)
+        connect_row.pack_start(button("Choose Drive folder…", self.choose_drive_folder), False, False, 0)
+        connection.pack_start(connect_row, False, False, 0)
+        self.drive_folder_label = label(self._drive_folder_text(), "quiet")
+        connection.pack_start(self.drive_folder_label, False, False, 0)
+        page.pack_start(connection, False, False, 0)
+
+        settings = Gtk.Grid(column_spacing=24, row_spacing=14)
+        settings.get_style_context().add_class("card")
+        self.automatic_enabled = Gtk.CheckButton(label="Enable background backups")
+        self.automatic_enabled.set_active(saved.get("enabled", False))
+        settings.attach(self.automatic_enabled, 0, 0, 2, 1)
+        settings.attach(label("Frequency", "quiet"), 0, 1, 1, 1)
+        self.automatic_frequency = Gtk.ComboBoxText()
+        self.automatic_frequency.append("daily", "Every day")
+        self.automatic_frequency.append("weekly", "Once a week")
+        self.automatic_frequency.set_active_id(saved.get("frequency", "weekly"))
+        self.automatic_frequency.connect("changed", self.frequency_changed)
+        settings.attach(self.automatic_frequency, 1, 1, 1, 1)
+        self.weekday_caption = label("Day", "quiet")
+        settings.attach(self.weekday_caption, 0, 2, 1, 1)
+        self.automatic_weekday = Gtk.ComboBoxText()
+        for value, text in zip(automation.WEEKDAYS, ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")):
+            self.automatic_weekday.append(value, text)
+        self.automatic_weekday.set_active_id(saved.get("weekday", "Sun"))
+        settings.attach(self.automatic_weekday, 1, 2, 1, 1)
+        settings.attach(label("Start time", "quiet"), 0, 3, 1, 1)
+        time_row = box(8, True)
+        self.automatic_hour = Gtk.SpinButton.new_with_range(0, 23, 1)
+        self.automatic_hour.set_value(saved.get("hour", 2))
+        self.automatic_minute = Gtk.SpinButton.new_with_range(0, 59, 1)
+        self.automatic_minute.set_value(saved.get("minute", 0))
+        time_row.pack_start(self.automatic_hour, False, False, 0)
+        time_row.pack_start(Gtk.Label(label=":"), False, False, 0)
+        time_row.pack_start(self.automatic_minute, False, False, 0)
+        settings.attach(time_row, 1, 3, 1, 1)
+        settings.attach(label("Keep backups", "quiet"), 0, 4, 1, 1)
+        retention_row = box(8, True)
+        self.automatic_retention = Gtk.SpinButton.new_with_range(1, 3650, 1)
+        self.automatic_retention.set_value(saved.get("retention_days", 30))
+        retention_row.pack_start(self.automatic_retention, False, False, 0)
+        retention_row.pack_start(Gtk.Label(label="days"), False, False, 0)
+        settings.attach(retention_row, 1, 4, 1, 1)
+        page.pack_start(settings, False, False, 0)
+        self.frequency_changed()
+
+        page.pack_start(label("Automatic backups use the items currently checked on Back up, including GNOME changes, user-installed extensions under App configurations, and the app list. Saving this schedule takes a snapshot of that selection.", "quiet"), False, False, 0)
+        self.automatic_status = label("", "quiet")
+        page.pack_start(self.automatic_status, False, False, 0)
+        self.refresh_automatic_status()
+        actions = box(8, True)
+        actions.pack_end(button("Save schedule", self.save_automatic, True), False, False, 0)
+        actions.pack_end(button("Save and back up now", lambda _: self.save_automatic(None, run_now=True)), False, False, 0)
+        self.add_action_row("Automatic", actions)
+
     def build_updates(self):
         page = self.page("Updates", "Ubuntu Backup stays up to date",
                          "Updates come directly from the public GitHub releases for this app.")
@@ -346,6 +417,100 @@ class Window(Gtk.ApplicationWindow):
         page.pack_start(Gtk.LinkButton(uri=f"https://github.com/{updates.REPOSITORY}",
                                      label="Source code and project on GitHub"), False, False, 0)
         page.pack_start(label("Ubuntu Backup is an independent project and is not an official Canonical product.", "quiet"), False, False, 0)
+
+    def _drive_folder_text(self):
+        return "Backup folder: " + (self.drive_label if self.drive_uri else "Not selected")
+
+    def frequency_changed(self, *_):
+        weekly = self.automatic_frequency.get_active_id() == "weekly"
+        self.weekday_caption.set_sensitive(weekly)
+        self.automatic_weekday.set_sensitive(weekly)
+
+    def refresh_automatic_status(self):
+        status = automation.read_status(self.home) if not self.test_mode else {}
+        if not status:
+            self.automatic_status.set_text("No automatic backup has run yet.")
+        elif status.get("state") == "success":
+            deleted = status.get("deleted", 0)
+            self.automatic_status.set_text(f"Last backup: {status.get('completed', 'unknown time')} · {status.get('filename', '')} · {deleted} expired removed")
+        elif status.get("state") == "running":
+            self.automatic_status.set_text("An automatic backup is running in the background.")
+        else:
+            self.automatic_status.set_text("Last automatic backup failed: " + status.get("message", "Unknown error"))
+
+    def open_online_accounts(self, _):
+        try:
+            automation.open_online_accounts()
+        except core.TransferError as e:
+            self.message("Could not open Online Accounts", str(e))
+        else:
+            self.message("Add Google Drive to Ubuntu", "In Online Accounts, add your Google account and make sure Files is enabled. Return here and choose a Drive folder.")
+
+    def choose_drive_folder(self, _):
+        dialog = self.chooser("Choose a Google Drive folder", Gtk.FileChooserAction.SELECT_FOLDER)
+        dialog.set_local_only(False)
+        if self.drive_uri:
+            dialog.set_uri(self.drive_uri)
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            uri = dialog.get_uri()
+        else:
+            uri = None
+        dialog.destroy()
+        if uri:
+            try:
+                self.drive_uri = automation.normalize_drive_uri(uri)
+                self.drive_label = automation.drive_folder_label(uri)
+            except core.TransferError as e:
+                self.message("Choose a Google Drive folder", str(e) + "\n\nAdd your Google account in Ubuntu Online Accounts and select a folder under Google Drive.")
+            else:
+                self.drive_status.set_text("Google Drive folder selected")
+                self.drive_folder_label.set_text(self._drive_folder_text())
+
+    def automatic_config(self):
+        roots = list(dict.fromkeys(self.backup_selection.selected() + self.config_selection.selected()))
+        personal = [row[1] for row in self.backup_selection.model if row[0] and row[2].startswith("Personal")]
+        value = {
+            "enabled": self.automatic_enabled.get_active(),
+            "frequency": self.automatic_frequency.get_active_id(),
+            "weekday": self.automatic_weekday.get_active_id(),
+            "hour": self.automatic_hour.get_value_as_int(),
+            "minute": self.automatic_minute.get_value_as_int(),
+            "retention_days": self.automatic_retention.get_value_as_int(),
+            "remote_uri": self.drive_uri,
+            "remote_label": self.drive_label or "Google Drive folder",
+            "roots": roots,
+            "personal_roots": personal,
+            "include_gnome": self.backup_gnome.get_active(),
+            "include_apps": self.backup_apps.get_active(),
+        }
+        if not roots and not value["include_gnome"] and not value["include_apps"]:
+            raise core.TransferError("Choose something on Back up before saving the automatic schedule")
+        if value["enabled"] and not self.drive_uri:
+            raise core.TransferError("Choose a Google Drive folder before enabling automatic backups")
+        return automation.validate_config(value)
+
+    def save_automatic(self, _, run_now=False):
+        try:
+            value = self.automatic_config()
+            if run_now and not self.drive_uri:
+                raise core.TransferError("Choose a Google Drive folder before starting a backup")
+        except core.TransferError as e:
+            self.message("Automatic backup is not ready", str(e))
+            return
+        def worker():
+            automation.save_config(self.home, value)
+            automation.configure_timer(self.home, value)
+            return automation.run_backup(self.home, force=True, log=self.log) if run_now else None
+        def done(result):
+            self.refresh_automatic_status()
+            if result:
+                self.message("Automatic backup uploaded", f"{result['filename']}\n\nExpired automatic backups older than {value['retention_days']} days were moved to Google Drive trash.")
+            elif value["enabled"]:
+                self.message("Automatic backup enabled", "Ubuntu will run it in the background at the selected time, even while this app is closed. Missed runs start after you next sign in.")
+            else:
+                self.message("Automatic backup disabled", "The saved settings remain available if you enable it again.")
+        self.work("Uploading backup to Google Drive…" if run_now else "Saving automatic-backup schedule…", worker, done)
 
     def log(self, text):
         def append():

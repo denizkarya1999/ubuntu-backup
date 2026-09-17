@@ -1,24 +1,27 @@
-Ubuntu Backup 1.1.1 fixes large backups and adds a screenshot gallery.
+Ubuntu Backup 1.2.0 adds automatic Google Drive backup and retention.
 
-- Removes the hardcoded 64 GiB archive limit and the 200,000-file selection cap.
-- Verifies archives by streaming their contents without extracting a complete temporary copy.
-- Restores selected files in a second pass and checks each file again before publishing it.
-- Saves completed archives without duplicating the entire file on supported Ubuntu filesystems.
-- Shows progress while reading, verifying, and restoring large files.
-- Adds five real app screenshots to the repository and README using demonstration files.
+- Connect Google Drive through Ubuntu's built-in GNOME Online Accounts.
+- Browse My Drive and select the destination folder in the app.
+- Schedule backups every day or once a week at a selected local time.
+- Run in the background through an Ubuntu user timer while the app is closed.
+- Catch up a missed timer after the user next signs in.
+- Save the currently checked files, user-installed GNOME extensions, GNOME preferences and extension state, and app-list options as the automatic selection.
+- Run the saved selection immediately with **Save and back up now**.
+- Keep backups for 1–3,650 days, with 30 days as the default.
+- Move only expired app-created automatic backups to Google Drive trash.
+- Show the last success, active run, or failure on the Automatic screen.
+- Prevent overlapping automatic runs and always remove local staging archives.
 
-Existing backups remain compatible. Keep the backup drive connected while restoring.
-Actual free disk space, filesystem limits, and available memory still apply.
+Google Drive sign-in stays managed by Ubuntu; the app saves only the selected
+Drive folder address. Automatic backups require the desktop user to be signed in,
+the computer to be awake, and an internet connection. Large backups need enough
+local free space for one staging archive before upload. Existing local backup and
+restore behavior remains compatible.
 
-Validation includes 130 GiB of sparse-file selection metadata, more than 200,000
-selected entries, streaming round trips, changed-archive detection, and recovery
-from a second-pass checksum failure. The sparse test checks the former size boundary
-without writing a physical 130 GiB test backup.
-
-Use **Updates** in the app, or download `ubuntu-backup_1.1.1_all.deb` below:
+Use **Updates** in the app, or download `ubuntu-backup_1.2.0_all.deb` below:
 
 ```sh
-sudo apt install ./ubuntu-backup_1.1.1_all.deb
+sudo apt install ./ubuntu-backup_1.2.0_all.deb
 ```
 
-Close and reopen the app after upgrading, then retry your backup.
+Close and reopen Ubuntu Backup after upgrading.

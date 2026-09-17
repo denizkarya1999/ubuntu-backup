@@ -5,33 +5,35 @@ content on another Ubuntu Desktop computer.
 
 ## Screenshots
 
-Real application screens using demonstration files, captured with version 1.1.1.
+Real application screens using demonstration files, captured with version 1.2.0.
 
 | Back up | App configurations |
 | --- | --- |
 | ![Dark backup screen with selected personal files](docs/screenshots/backup.png) | ![App settings shown with readable names](docs/screenshots/configurations.png) |
 | Restore | About Us |
 | ![Selective restore screen](docs/screenshots/restore.png) | ![About Us with app and developer details](docs/screenshots/about.png) |
+| Automatic Google Drive backup | Updates |
+| ![Daily or weekly Google Drive backup settings](docs/screenshots/automatic.png) | ![Automatic app update settings](docs/screenshots/updates.png) |
 
 [View all full-size screenshots, including Updates](docs/screenshots/).
 
 ## Install
 
-Download `ubuntu-backup_1.1.1_all.deb` from
+Download `ubuntu-backup_1.2.0_all.deb` from
 [GitHub Releases](https://github.com/denizkarya1999/ubuntu-backup/releases/latest).
 Open the downloaded package with your software installer, or run:
 
 ```sh
-sudo apt install ./ubuntu-backup_1.1.1_all.deb
+sudo apt install ./ubuntu-backup_1.2.0_all.deb
 ```
 
 Launch **Ubuntu Backup** from the applications menu. Run it as your normal user.
 Administrator authentication is requested only for software installation.
 
 Designed for Ubuntu Desktop 22.04 and newer. The package uses the distribution's
-Python, GTK 3, dconf, APT, Snap, Flatpak, and PolicyKit. The same Ubuntu release
+Python, GTK 3, GNOME Online Accounts, dconf, APT, Snap, Flatpak, and PolicyKit. The same Ubuntu release
 on both computers is recommended. Internet is needed for app installation and
-app updates, but not for backing up or restoring files.
+app updates and Google Drive backup, but not for local backup or restore.
 
 ## From the old computer to the new one
 
@@ -57,13 +59,43 @@ restore remain available. Backups from version 1.0.0 remain compatible.
 **About Us** shows the app name, installed version, developer, development agent,
 programming language, interface technologies, and license.
 
+## Automatic Google Drive backup
+
+Open **Automatic** to connect Google Drive, browse to the destination folder,
+and choose daily or weekly backup. Set the start time and retention period (30
+days by default), then choose **Save schedule**. The checked items on **Back up**
+are saved as the automatic selection. **Save and back up now** verifies the full
+path immediately.
+
+Ubuntu's per-user background scheduler runs the backup while the app is closed.
+The computer must be on, the desktop user must be signed in, and the internet
+connection and selected source files must be available. A missed run starts after
+the next sign-in. Only one automatic run can execute at a time; failures and the
+last successful upload are shown on the Automatic screen and recorded in the user
+service journal.
+
+Google sign-in is handled by Ubuntu's built-in GNOME Online Accounts. Add the
+Google account there, enable **Files**, then use Ubuntu Backup's standard folder
+picker to choose a location under Google Drive. Ubuntu stores the account token;
+the app stores only the selected folder address and reads and writes that folder.
+Remove the account from Online Accounts if the computer is lost or no longer
+trusted.
+
+Each run first creates a local staging archive under
+`~/.local/state/ubuntu-backup/`, uploads it, then removes the local staging file.
+Allow enough local free space for one complete archive. After a successful upload,
+automatic `.ubackup` files older than the chosen retention period are moved to
+Google Drive trash. Manually uploaded files and unrelated Drive content are never
+removed. Google Drive trash remains recoverable until Google permanently clears it
+or you empty it.
+
 ## What transfers
 
 | Content | Behavior |
 | --- | --- |
 | Personal files | Pick individual files or folders inside your home; file contents, permissions, and modification times are preserved. |
-| GNOME | Saved dconf preferences under `/org/gnome/`, `/org/gtk/`, and `/com/ubuntu/`: appearance, shortcuts, desktop and app preferences. |
-| Configurations | Selectable `.config` folders, themes, icons, fonts, user GNOME extensions, browser profiles, and extra home-folder paths. |
+| GNOME | Saved dconf preferences under `/org/gnome/`, `/org/gtk/`, and `/com/ubuntu/`: appearance, shortcuts, desktop and app preferences, plus GNOME Shell extension enabled/disabled state and settings. |
+| Configurations | Selectable `.config` folders, themes, icons, fonts, user-installed GNOME extension files, browser profiles, and extra home-folder paths. |
 | APT apps | Saves manually installed packages and source versions; installs versions available from the new computer's configured repositories. Hardware/boot packages start unchecked. |
 | Snap apps | Saves names, full channels, and classic confinement. Select `snap/APP/current` and `common` for user data. Saved data maps to the installed revision on the destination, even before the first launch. |
 | Flatpak apps | Saves app IDs, branches, remotes, and user/system scope. Select configuration and optional data folders under `.var/app`. Flathub is added when needed; custom remotes must be configured first. |
@@ -76,7 +108,10 @@ managers need their original installers. APT records include manually marked bas
 packages as well as apps; review the list before installing.
 
 Custom wallpaper files must be selected along with GNOME preferences. Extensions
-and themes must support the destination GNOME version. Screen layouts, audio
+and themes must support the destination GNOME version. User-installed extensions
+under `~/.local/share/gnome-shell/extensions` are selected by default; extensions
+installed system-wide are restored through their APT package when available.
+Screen layouts, audio
 device settings, `/etc`, services, drivers, system Snap data under `/var/snap`,
 Flatpak permission overrides, and credentials such as SSH/GPG keys and keyrings
 are not automatically transferred. Some apps require signing in again.
@@ -90,8 +125,9 @@ files are never rewritten. Disable that option to preserve all saved text exactl
 
 Archives are **not encrypted**. App profiles can contain tokens, signed-in sessions,
 and other private data. Browser and some other account profiles start unchecked.
-Keep backups on a trusted or encrypted drive. The app does not upload your files.
-Automatic updates contact GitHub for this project's public releases.
+Keep backups on a trusted or encrypted drive. The app uploads files only when you
+explicitly configure or run Google Drive backup. Automatic updates contact GitHub
+for this project's public releases.
 
 Before restoring, all archive members and SHA-256 checksums are validated. Archives
 cannot contain links, device files, absolute paths, or traversal paths. Normal
@@ -149,7 +185,7 @@ signed with a project signing key.
 python3 -m ubuntu_backup
 python3 -m unittest discover -s tests -v
 python3 build.py
-dpkg-deb --info dist/ubuntu-backup_1.1.1_all.deb
+dpkg-deb --info dist/ubuntu-backup_1.2.0_all.deb
 ```
 
 For the headless GTK and isolated GNOME integration tests:
@@ -178,6 +214,8 @@ Implementation references:
 [APT manual marking](https://manpages.ubuntu.com/manpages/noble/man8/apt-mark.8.html),
 [Flatpak commands](https://docs.flatpak.org/en/latest/flatpak-command-reference.html),
 [Snap channels](https://snapcraft.io/docs/explanation/how-snaps-work/channels-and-tracks/),
+[GNOME Online Accounts](https://help.gnome.org/users/gnome-help/stable/accounts.html.en),
+[systemd timers](https://www.freedesktop.org/software/systemd/man/latest/systemd.timer.html),
 [GitHub releases](https://docs.github.com/en/rest/releases/releases).
 
 Ubuntu Backup is an independent project, not an official Canonical product.

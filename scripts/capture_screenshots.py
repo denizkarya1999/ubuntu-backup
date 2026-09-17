@@ -80,6 +80,15 @@ with tempfile.TemporaryDirectory(prefix="ubuntu-backup-demo-") as temporary:
     window.restore_gnome.set_active(True)
     window.status.set_text("Review your selection, then restore on the new computer")
     capture(window, "restore.png")
+    window.stack.set_visible_child_name("Automatic")
+    window.drive_status.set_text("Google Drive folder selected")
+    window.drive_uri = "google-drive://example/folder"
+    window.drive_label = "Computer Backups / Ubuntu Backup"
+    window.drive_folder_label.set_text(window._drive_folder_text())
+    window.automatic_enabled.set_active(True)
+    window.automatic_status.set_text("Last backup: September 17, 2026 · 1 expired backup moved to trash")
+    window.status.set_text("Automatic backup is enabled")
+    capture(window, "automatic.png")
     window.stack.set_visible_child_name("Updates")
     window.status.set_text("Ready")
     capture(window, "updates.png")
@@ -88,4 +97,4 @@ with tempfile.TemporaryDirectory(prefix="ubuntu-backup-demo-") as temporary:
     window.bundle.close()
 
 window.destroy()
-print(f"Saved five app screenshots to {OUTPUT}")
+print(f"Saved six app screenshots to {OUTPUT}")
