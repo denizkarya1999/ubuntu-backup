@@ -12,11 +12,11 @@ def main():
     parser.add_argument("--version", action="version", version="Ubuntu Backup " + __version__)
     parser.add_argument("--inspect", metavar="BACKUP", help="Verify a backup and print a summary without restoring")
     parser.add_argument("--run-scheduled-backup", action="store_true",
-                        help="run the configured automatic Google Drive backup")
+                        help="run the configured automatic backup")
     args = parser.parse_args()
     if args.run_scheduled_backup:
         if os.geteuid() == 0:
-            print("Automatic backup must run as the desktop user, without sudo.", file=sys.stderr)
+            print("Open Ubuntu Backup as your normal desktop user, without sudo.", file=sys.stderr)
             return 1
         try:
             from .automation import run_backup

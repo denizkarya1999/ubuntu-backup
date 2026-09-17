@@ -41,12 +41,12 @@ Section: utils
 Priority: optional
 Architecture: all
 Maintainer: denizkarya1999 <denizkarya1999@outlook.com>
-Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, python3-apt, dconf-cli, pkexec | policykit-1, flatpak, snapd, gnome-control-center, gnome-online-accounts, gvfs-backends
+Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, python3-apt, dconf-cli, pkexec | policykit-1, flatpak, snapd
 Installed-Size: {size}
 Homepage: https://github.com/denizkarya1999/ubuntu-backup
 Description: Back up and migrate an Ubuntu desktop
  Save GNOME preferences, selected personal files and user configurations,
- and APT, Snap and Flatpak application lists. Schedule Google Drive backups,
+ and APT, Snap and Flatpak application lists. Schedule backups to a chosen folder,
  review and restore on another Ubuntu desktop, and recover overwritten files.
 ''')
     sums = []

@@ -80,13 +80,13 @@ with tempfile.TemporaryDirectory(prefix="ubuntu-backup-demo-") as temporary:
     window.restore_gnome.set_active(True)
     window.status.set_text("Review your selection, then restore on the new computer")
     capture(window, "restore.png")
+    destination = Path(temporary) / "External Backup Drive"
+    destination.mkdir()
     window.stack.set_visible_child_name("Automatic")
-    window.drive_status.set_text("Google Drive folder selected")
-    window.drive_uri = "google-drive://example/folder"
-    window.drive_label = "Computer Backups / Ubuntu Backup"
-    window.drive_folder_label.set_text(window._drive_folder_text())
+    window.backup_destination = str(destination)
+    window.backup_destination_label.set_text("Selected folder: /media/example/Backup Drive/Ubuntu Backup")
     window.automatic_enabled.set_active(True)
-    window.automatic_status.set_text("Last backup: September 17, 2026 · 1 expired backup moved to trash")
+    window.automatic_status.set_text("Last backup: September 17, 2026 · 1 expired backup deleted")
     window.status.set_text("Automatic backup is enabled")
     capture(window, "automatic.png")
     window.stack.set_visible_child_name("Updates")

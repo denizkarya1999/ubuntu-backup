@@ -296,26 +296,21 @@ class Window(Gtk.ApplicationWindow):
         self.add_action_row("Restore", row)
 
     def build_automatic(self):
-        page = self.page("Automatic", "Back up to Google Drive automatically",
-                         "Choose daily or weekly background backups, a Drive folder, and how long old backups are kept.")
+        page = self.page("Automatic", "Back up automatically",
+                         "Choose a folder, then run a daily or weekly backup in the background.")
         try:
             saved = automation.load_config(self.home) if not self.test_mode else {}
         except core.TransferError:
             saved = {}
-        connection = box(10)
-        connection.get_style_context().add_class("card")
-        self.drive_uri = saved.get("remote_uri", "")
-        self.drive_label = saved.get("remote_label", "")
-        self.drive_status = label("Google Drive folder selected" if self.drive_uri else "Add Google Drive to Ubuntu", "section")
-        connection.pack_start(self.drive_status, False, False, 0)
-        connection.pack_start(label("Add your Google account in Ubuntu Online Accounts, enable Files, then choose a Drive folder. Your sign-in stays managed by Ubuntu.", "quiet"), False, False, 0)
-        connect_row = box(8, True)
-        connect_row.pack_start(button("Open Online Accounts…", self.open_online_accounts), False, False, 0)
-        connect_row.pack_start(button("Choose Drive folder…", self.choose_drive_folder), False, False, 0)
-        connection.pack_start(connect_row, False, False, 0)
-        self.drive_folder_label = label(self._drive_folder_text(), "quiet")
-        connection.pack_start(self.drive_folder_label, False, False, 0)
-        page.pack_start(connection, False, False, 0)
+        destination = box(10)
+        destination.get_style_context().add_class("card")
+        destination.pack_start(label("Backup destination", "section"), False, False, 0)
+        destination.pack_start(label("Choose a local folder or a folder on a connected external drive. The folder must be available when the timer runs.", "quiet"), False, False, 0)
+        destination.pack_start(button("Choose destination folder…", self.choose_backup_destination), False, False, 0)
+        self.backup_destination = saved.get("destination", "")
+        self.backup_destination_label = label(self.destination_text(), "quiet")
+        destination.pack_start(self.backup_destination_label, False, False, 0)
+        page.pack_start(destination, False, False, 0)
 
         settings = Gtk.Grid(column_spacing=24, row_spacing=14)
         settings.get_style_context().add_class("card")
@@ -346,7 +341,7 @@ class Window(Gtk.ApplicationWindow):
         time_row.pack_start(Gtk.Label(label=":"), False, False, 0)
         time_row.pack_start(self.automatic_minute, False, False, 0)
         settings.attach(time_row, 1, 3, 1, 1)
-        settings.attach(label("Keep backups", "quiet"), 0, 4, 1, 1)
+        settings.attach(label("Delete backups after", "quiet"), 0, 4, 1, 1)
         retention_row = box(8, True)
         self.automatic_retention = Gtk.SpinButton.new_with_range(1, 3650, 1)
         self.automatic_retention.set_value(saved.get("retention_days", 30))
@@ -356,7 +351,7 @@ class Window(Gtk.ApplicationWindow):
         page.pack_start(settings, False, False, 0)
         self.frequency_changed()
 
-        page.pack_start(label("Automatic backups use the items currently checked on Back up, including GNOME changes, user-installed extensions under App configurations, and the app list. Saving this schedule takes a snapshot of that selection.", "quiet"), False, False, 0)
+        page.pack_start(label("Automatic backups use the items currently checked on Back up, including GNOME changes, user-installed extensions under App configurations, and the app list. Only app-created automatic backups are removed by retention.", "quiet"), False, False, 0)
         self.automatic_status = label("", "quiet")
         page.pack_start(self.automatic_status, False, False, 0)
         self.refresh_automatic_status()
@@ -418,8 +413,8 @@ class Window(Gtk.ApplicationWindow):
                                      label="Source code and project on GitHub"), False, False, 0)
         page.pack_start(label("Ubuntu Backup is an independent project and is not an official Canonical product.", "quiet"), False, False, 0)
 
-    def _drive_folder_text(self):
-        return "Backup folder: " + (self.drive_label if self.drive_uri else "Not selected")
+    def destination_text(self):
+        return "Selected folder: " + (self.backup_destination if self.backup_destination else "None")
 
     def frequency_changed(self, *_):
         weekly = self.automatic_frequency.get_active_id() == "weekly"
@@ -431,41 +426,26 @@ class Window(Gtk.ApplicationWindow):
         if not status:
             self.automatic_status.set_text("No automatic backup has run yet.")
         elif status.get("state") == "success":
-            deleted = status.get("deleted", 0)
-            self.automatic_status.set_text(f"Last backup: {status.get('completed', 'unknown time')} · {status.get('filename', '')} · {deleted} expired removed")
+            self.automatic_status.set_text(f"Last backup: {status.get('completed', 'unknown time')} · {status.get('filename', '')} · {status.get('deleted', 0)} expired deleted")
         elif status.get("state") == "running":
             self.automatic_status.set_text("An automatic backup is running in the background.")
         else:
             self.automatic_status.set_text("Last automatic backup failed: " + status.get("message", "Unknown error"))
 
-    def open_online_accounts(self, _):
-        try:
-            automation.open_online_accounts()
-        except core.TransferError as e:
-            self.message("Could not open Online Accounts", str(e))
-        else:
-            self.message("Add Google Drive to Ubuntu", "In Online Accounts, add your Google account and make sure Files is enabled. Return here and choose a Drive folder.")
-
-    def choose_drive_folder(self, _):
-        dialog = self.chooser("Choose a Google Drive folder", Gtk.FileChooserAction.SELECT_FOLDER)
-        dialog.set_local_only(False)
-        if self.drive_uri:
-            dialog.set_uri(self.drive_uri)
+    def choose_backup_destination(self, _):
+        dialog = self.chooser("Choose automatic backup destination", Gtk.FileChooserAction.SELECT_FOLDER)
+        if self.backup_destination and Path(self.backup_destination).is_dir():
+            dialog.set_current_folder(self.backup_destination)
         response = dialog.run()
-        if response == Gtk.ResponseType.OK:
-            uri = dialog.get_uri()
-        else:
-            uri = None
+        filename = dialog.get_filename()
         dialog.destroy()
-        if uri:
+        if response == Gtk.ResponseType.OK and filename:
             try:
-                self.drive_uri = automation.normalize_drive_uri(uri)
-                self.drive_label = automation.drive_folder_label(uri)
+                self.backup_destination = automation.normalize_destination(filename)
             except core.TransferError as e:
-                self.message("Choose a Google Drive folder", str(e) + "\n\nAdd your Google account in Ubuntu Online Accounts and select a folder under Google Drive.")
+                self.message("Choose another destination", str(e))
             else:
-                self.drive_status.set_text("Google Drive folder selected")
-                self.drive_folder_label.set_text(self._drive_folder_text())
+                self.backup_destination_label.set_text(self.destination_text())
 
     def automatic_config(self):
         roots = list(dict.fromkeys(self.backup_selection.selected() + self.config_selection.selected()))
@@ -477,8 +457,7 @@ class Window(Gtk.ApplicationWindow):
             "hour": self.automatic_hour.get_value_as_int(),
             "minute": self.automatic_minute.get_value_as_int(),
             "retention_days": self.automatic_retention.get_value_as_int(),
-            "remote_uri": self.drive_uri,
-            "remote_label": self.drive_label or "Google Drive folder",
+            "destination": self.backup_destination,
             "roots": roots,
             "personal_roots": personal,
             "include_gnome": self.backup_gnome.get_active(),
@@ -486,15 +465,17 @@ class Window(Gtk.ApplicationWindow):
         }
         if not roots and not value["include_gnome"] and not value["include_apps"]:
             raise core.TransferError("Choose something on Back up before saving the automatic schedule")
-        if value["enabled"] and not self.drive_uri:
-            raise core.TransferError("Choose a Google Drive folder before enabling automatic backups")
+        if value["enabled"] and not self.backup_destination:
+            raise core.TransferError("Choose a destination before enabling automatic backups")
         return automation.validate_config(value)
 
     def save_automatic(self, _, run_now=False):
         try:
             value = self.automatic_config()
-            if run_now and not self.drive_uri:
-                raise core.TransferError("Choose a Google Drive folder before starting a backup")
+            if run_now and not self.backup_destination:
+                raise core.TransferError("Choose a destination before starting a backup")
+            if value["enabled"] or run_now:
+                automation.check_destination(self.home, value["destination"], value["roots"])
         except core.TransferError as e:
             self.message("Automatic backup is not ready", str(e))
             return
@@ -505,12 +486,12 @@ class Window(Gtk.ApplicationWindow):
         def done(result):
             self.refresh_automatic_status()
             if result:
-                self.message("Automatic backup uploaded", f"{result['filename']}\n\nExpired automatic backups older than {value['retention_days']} days were moved to Google Drive trash.")
+                self.message("Automatic backup saved", f"{result['destination']}/{result['filename']}\n\nExpired automatic backups older than {value['retention_days']} days were deleted.")
             elif value["enabled"]:
-                self.message("Automatic backup enabled", "Ubuntu will run it in the background at the selected time, even while this app is closed. Missed runs start after you next sign in.")
+                self.message("Automatic backup enabled", "Ubuntu will run it in the background at the selected time, even while this app is closed. Keep the destination connected and available.")
             else:
                 self.message("Automatic backup disabled", "The saved settings remain available if you enable it again.")
-        self.work("Uploading backup to Google Drive…" if run_now else "Saving automatic-backup schedule…", worker, done)
+        self.work("Creating automatic backup…" if run_now else "Saving automatic-backup schedule…", worker, done)
 
     def log(self, text):
         def append():

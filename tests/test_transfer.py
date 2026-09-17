@@ -359,12 +359,14 @@ class AutomaticBackupTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.home = Path(self.tmp.name) / "home"
+        self.destination = Path(self.tmp.name) / "backup-drive"
         (self.home / "Documents").mkdir(parents=True)
+        self.destination.mkdir()
         (self.home / "Documents/report.txt").write_text("weekly report")
         self.config = {
             "enabled": True, "frequency": "weekly", "weekday": "Sun",
             "hour": 2, "minute": 30, "retention_days": 30,
-            "remote_uri": "google-drive://account/folder-id", "remote_label": "Ubuntu Backup",
+            "destination": str(self.destination),
             "roots": ["Documents/report.txt"], "personal_roots": ["Documents/report.txt"],
             "include_gnome": False, "include_apps": False,
         }
@@ -373,17 +375,18 @@ class AutomaticBackupTests(unittest.TestCase):
         saved = automation.save_config(self.home, self.config)
         self.assertEqual(automation.load_config(self.home), saved)
         self.assertEqual(automation.schedule_text(saved), "Sun *-*-* 02:30:00")
-        daily = {**saved, "frequency": "daily"}
-        self.assertEqual(automation.schedule_text(daily), "*-*-* 02:30:00")
+        self.assertEqual(automation.schedule_text({**saved, "frequency": "daily"}), "*-*-* 02:30:00")
         self.assertEqual(stat.S_IMODE(automation.config_path(self.home).stat().st_mode), 0o600)
 
-    def test_invalid_remote_and_retention_are_rejected(self):
+    def test_invalid_destination_retention_and_nested_destination_are_rejected(self):
         with self.assertRaises(core.TransferError):
-            automation.validate_config({**self.config, "remote_uri": "file:///tmp"})
+            automation.validate_config({**self.config, "destination": "relative/folder"})
         with self.assertRaises(core.TransferError):
             automation.validate_config({**self.config, "retention_days": 0})
-        with self.assertRaises(core.TransferError):
-            automation.validate_config({**self.config, "personal_roots": ["Pictures"]})
+        nested = self.home / "Documents/Backups"
+        nested.mkdir()
+        with self.assertRaisesRegex(core.TransferError, "outside"):
+            automation.check_destination(self.home, nested, ["Documents"])
 
     def test_timer_is_user_level_persistent_and_can_be_disabled(self):
         calls = []
@@ -400,39 +403,48 @@ class AutomaticBackupTests(unittest.TestCase):
             automation.configure_timer(self.home, {**self.config, "enabled": False})
         self.assertEqual(calls[-1], ["disable", "--now", "ubuntu-backup-automatic.timer"])
 
-    def test_retention_deletes_only_expired_automatic_backups(self):
-        listing = [
-            {"name": "ubuntu-backup-auto-laptop-20260801-020000.ubackup", "modified": automation.dt.datetime(2026, 8, 1, 2, tzinfo=automation.dt.timezone.utc), "file": "old"},
-            {"name": "ubuntu-backup-auto-laptop-20260910-020000.ubackup", "modified": automation.dt.datetime(2026, 9, 10, 2, tzinfo=automation.dt.timezone.utc), "file": "recent"},
-            {"name": "ubuntu-backup-manual.ubackup", "modified": automation.dt.datetime(2020, 1, 1, tzinfo=automation.dt.timezone.utc), "file": "manual"},
-            {"name": "notes.txt", "modified": automation.dt.datetime(2020, 1, 1, tzinfo=automation.dt.timezone.utc), "file": "notes"},
-        ]
-        trashed = []
+    def test_retention_deletes_only_expired_app_created_backups(self):
+        old = self.destination / "ubuntu-backup-auto-laptop-20260801-020000.ubackup"
+        recent = self.destination / "ubuntu-backup-auto-laptop-20260910-020000.ubackup"
+        manual = self.destination / "ubuntu-backup-manual.ubackup"
+        for path in (old, recent, manual):
+            path.write_text("backup")
+        os.utime(old, (1785559200, 1785559200))
+        os.utime(recent, (1789012800, 1789012800))
+        os.utime(manual, (1577836800, 1577836800))
         now = automation.dt.datetime(2026, 9, 17, tzinfo=automation.dt.timezone.utc)
-        with patch.object(automation, "list_drive_files", return_value=listing), \
-             patch.object(automation, "trash_drive_file", side_effect=lambda file: trashed.append(file)):
-            deleted = automation.prune(self.home, "google-drive://account/folder-id", 30, now=now)
-        self.assertEqual(deleted, ["ubuntu-backup-auto-laptop-20260801-020000.ubackup"])
-        self.assertEqual(trashed, ["old"])
+        deleted = automation.prune(self.destination, 30, now=now)
+        self.assertEqual(deleted, [old.name])
+        self.assertFalse(old.exists())
+        self.assertTrue(recent.exists())
+        self.assertTrue(manual.exists())
 
-    def test_background_run_uploads_then_removes_staging_file(self):
+    def test_background_run_writes_verified_backup_to_selected_folder(self):
         automation.save_config(self.home, self.config)
-        uploaded = []
-        def create(destination, *args, **kwargs):
-            Path(destination).write_bytes(b"archive")
-            return {}
-        def upload(home, source, uri, log):
-            self.assertTrue(Path(source).exists())
-            uploaded.append((Path(source).name, uri))
-        with patch.object(core, "create_backup", side_effect=create), \
-             patch.object(automation, "upload", side_effect=upload), \
-             patch.object(automation, "prune", return_value=["old.ubackup"]):
-            result = automation.run_backup(self.home)
-        self.assertEqual(uploaded[0][1], "google-drive://account/folder-id")
-        self.assertFalse((core.state_dir(self.home) / "automatic-staging" / result["filename"]).exists())
-        status = automation.read_status(self.home)
-        self.assertEqual(status["state"], "success")
-        self.assertEqual(status["deleted"], 1)
+        result = automation.run_backup(self.home)
+        archive = self.destination / result["filename"]
+        self.assertTrue(archive.exists())
+        bundle = core.Bundle(archive)
+        self.addCleanup(bundle.close)
+        self.assertIn("home/Documents/report.txt", bundle.files)
+        self.assertEqual(automation.read_status(self.home)["state"], "success")
+
+    def test_version_120_google_drive_schedule_is_removed(self):
+        units = self.home / ".config/systemd/user"
+        units.mkdir(parents=True)
+        service = units / "ubuntu-backup-automatic.service"
+        timer = units / "ubuntu-backup-automatic.timer"
+        service.write_text("old")
+        timer.write_text("old")
+        core.atomic_write(automation.config_path(self.home), core.json_bytes({"remote_uri": "google-drive://old"}))
+        calls = []
+        with patch.object(automation, "_systemctl", side_effect=lambda args: calls.append(args)):
+            with self.assertRaisesRegex(core.TransferError, "Google Drive schedule was removed"):
+                automation.load_config(self.home)
+        self.assertFalse(service.exists())
+        self.assertFalse(timer.exists())
+        self.assertFalse(automation.config_path(self.home).exists())
+        self.assertEqual(calls[0], ["disable", "--now", "ubuntu-backup-automatic.timer"])
 
 
 class UpdateTests(unittest.TestCase):

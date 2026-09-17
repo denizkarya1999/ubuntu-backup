@@ -69,12 +69,10 @@ with tempfile.TemporaryDirectory(prefix="ubuntu-backup-ui-test-") as directory:
     window.backup_gnome.set_active(True)
     window.backup_apps.set_active(True)
     window.inventory_label.set_text("24 APT · 3 Snap · 2 Flatpak · Example preview")
-    window.drive_status.set_text("Google Drive folder selected")
-    window.drive_uri = "google-drive://example/folder"
-    window.drive_label = "Computer Backups / Ubuntu Backup"
-    window.drive_folder_label.set_text(window._drive_folder_text())
+    window.backup_destination = str(base / "External Backup Drive")
+    window.backup_destination_label.set_text(window.destination_text())
     window.automatic_enabled.set_active(True)
-    window.automatic_status.set_text("Last backup: 2026-09-17 · ubuntu-backup-auto-example.ubackup · 1 expired removed")
+    window.automatic_status.set_text("Last backup: 2026-09-17 · ubuntu-backup-auto-example.ubackup · 1 expired deleted")
     for page in ("Back up", "Restore", "Automatic", "Updates", "About Us"):
         window.stack.set_visible_child_name(page)
         for _ in range(20):
@@ -88,4 +86,4 @@ with tempfile.TemporaryDirectory(prefix="ubuntu-backup-ui-test-") as directory:
             pixbuf.savev(str(Path(output) / (page.lower().replace(" ", "-") + ".png")), "png", [], [])
     window.bundle.close()
 window.destroy()
-print("PASS: dark GTK interface, automatic Drive settings, hidden-file browsing, About Us, and combined personal/configuration backup")
+print("PASS: dark GTK interface, local automatic backup settings, hidden-file browsing, About Us, and combined personal/configuration backup")

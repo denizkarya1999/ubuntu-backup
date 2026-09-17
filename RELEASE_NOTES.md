@@ -1,27 +1,24 @@
-Ubuntu Backup 1.2.0 adds automatic Google Drive backup and retention.
+Ubuntu Backup 1.2.1 replaces Google Drive backup with automatic backup to a folder chosen by the user.
 
-- Connect Google Drive through Ubuntu's built-in GNOME Online Accounts.
-- Browse My Drive and select the destination folder in the app.
-- Schedule backups every day or once a week at a selected local time.
-- Run in the background through an Ubuntu user timer while the app is closed.
+- Choose any writable local folder or folder on a connected external drive.
+- Schedule the selected content every day or once a week at a chosen time.
+- Run in the background through Ubuntu's per-user timer while the app is closed.
 - Catch up a missed timer after the user next signs in.
-- Save the currently checked files, user-installed GNOME extensions, GNOME preferences and extension state, and app-list options as the automatic selection.
-- Run the saved selection immediately with **Save and back up now**.
-- Keep backups for 1–3,650 days, with 30 days as the default.
-- Move only expired app-created automatic backups to Google Drive trash.
+- Save the checked personal files, GNOME changes, user-installed extensions, app configurations, and app list.
+- Test the complete selection and destination with **Save and back up now**.
+- Delete only app-created automatic backups after 1–3,650 days, with 30 days as the default.
 - Show the last success, active run, or failure on the Automatic screen.
-- Prevent overlapping automatic runs and always remove local staging archives.
+- Prevent overlapping automatic runs and reject a destination nested inside a selected source folder.
+- Remove the version 1.2.0 Google Drive schedule safely and require a new local destination.
 
-Google Drive sign-in stays managed by Ubuntu; the app saves only the selected
-Drive folder address. Automatic backups require the desktop user to be signed in,
-the computer to be awake, and an internet connection. Large backups need enough
-local free space for one staging archive before upload. Existing local backup and
-restore behavior remains compatible.
+The destination must remain connected, mounted, and writable when the timer runs.
+Ubuntu Backup does not upload backup files. Existing local backups remain compatible,
+and GNOME preferences plus user-installed extension files remain supported.
 
-Use **Updates** in the app, or download `ubuntu-backup_1.2.0_all.deb` below:
+Use **Updates** in the app, or download `ubuntu-backup_1.2.1_all.deb` below:
 
 ```sh
-sudo apt install ./ubuntu-backup_1.2.0_all.deb
+sudo apt install ./ubuntu-backup_1.2.1_all.deb
 ```
 
-Close and reopen Ubuntu Backup after upgrading.
+Close and reopen Ubuntu Backup after upgrading, then configure the Automatic page.
