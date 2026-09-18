@@ -606,12 +606,21 @@ def _undo(home, recovery, log):
     log("Previous configuration and GNOME preferences restored. Installed apps were kept.")
 
 
+def recovery_records(state):
+    records = []
+    for path in (state / "recovery").glob("*/journal.json"):
+        journal = json.loads(path.read_text())
+        # Legacy journals have no sequence; use their filesystem timestamp.
+        order = journal.get("sequence", path.stat().st_mtime_ns)
+        records.append((order, path, journal))
+    return sorted(records, key=lambda record: (record[0], str(record[1])), reverse=True)
+
+
 def undo_last(home, log=lambda x: None):
     with restore_lock(home):
         state = state_dir(home)
-        records = sorted((state / "recovery").glob("*/journal.json"), reverse=True)
-        for record in records:
-            journal = json.loads(record.read_text())
+        records = recovery_records(state)
+        for _, record, journal in records:
             if not journal.get("undone"):
                 _undo(home, record.parent, log)
                 return
@@ -668,8 +677,12 @@ def restore_bundle(bundle, home, roots, settings=True, rewrite=True, log=lambda 
         if not plan and not keys:
             log("No configuration files or GNOME preferences selected")
             return None
-        recovery = private_dir(state_dir(home) / "recovery" / (dt.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]))
-        journal = {"home": str(home), "created": now(), "files": [], "settings": [], "directories": []}
+        state = state_dir(home)
+        previous = recovery_records(state)
+        sequence = previous[0][0] + 1 if previous else 1
+        recovery = private_dir(state / "recovery" / (dt.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]))
+        journal = {"home": str(home), "created": now(), "sequence": sequence,
+                   "files": [], "settings": [], "directories": []}
         def save():
             atomic_write(recovery / "journal.json", json_bytes(journal))
         save()

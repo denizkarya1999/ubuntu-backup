@@ -19,12 +19,12 @@ Real application screens using demonstration files, captured with version 1.2.1.
 
 ## Install
 
-Download `ubuntu-backup_1.2.1_all.deb` from
+Download `ubuntu-backup_1.2.2_all.deb` from
 [GitHub Releases](https://github.com/denizkarya1999/ubuntu-backup/releases/latest).
 Open the downloaded package with your software installer, or run:
 
 ```sh
-sudo apt install ./ubuntu-backup_1.2.1_all.deb
+sudo apt install ./ubuntu-backup_1.2.2_all.deb
 ```
 
 Launch **Ubuntu Backup** from the applications menu. Run it as your normal user.
@@ -74,9 +74,12 @@ automatic run can execute at a time; failures and the last success are shown on
 the Automatic screen.
 
 After a successful backup, app-created automatic `.ubackup` files older than the
-chosen retention period are deleted from that destination. Manually created
-backups and unrelated files are never removed. Google Drive integration is not
-included; choose a normal local or mounted filesystem folder.
+chosen retention period are deleted from that destination. Cleanup is restricted
+to this user’s backup identity, so other computers and users can share the
+destination. Update every computer using a shared folder to 1.2.2 or newer.
+Backups from versions before 1.2.2 are retained and can be removed manually.
+Manually created backups and unrelated files are never removed. Google Drive
+integration is not included; choose a normal local or mounted filesystem folder.
 
 ## What transfers
 
@@ -173,7 +176,7 @@ signed with a project signing key.
 python3 -m ubuntu_backup
 python3 -m unittest discover -s tests -v
 python3 build.py
-dpkg-deb --info dist/ubuntu-backup_1.2.1_all.deb
+dpkg-deb --info dist/ubuntu-backup_1.2.2_all.deb
 ```
 
 For the headless GTK and isolated GNOME integration tests:

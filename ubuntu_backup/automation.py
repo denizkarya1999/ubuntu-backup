@@ -9,10 +9,10 @@ import re
 import socket
 import stat
 import subprocess
+import uuid
 
 from . import core
 
-AUTOMATIC_NAME = re.compile(r"^ubuntu-backup-auto-[A-Za-z0-9._-]+-[0-9]{8}-[0-9]{6}\.ubackup$")
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
@@ -196,7 +196,24 @@ def check_destination(home, destination, roots):
     return resolved
 
 
-def prune(destination, retention_days, now=None, log=lambda _: None):
+def backup_owner(home):
+    """Persistent per-user identity; hostnames need not be unique or stable."""
+    path = core.state_dir(home) / "automatic-owner"
+    try:
+        owner = path.read_text().strip()
+    except FileNotFoundError:
+        owner = uuid.uuid4().hex
+        core.atomic_write(path, owner.encode())
+    if not re.fullmatch(r"[a-f0-9]{32}", owner):
+        raise core.TransferError("Invalid automatic-backup owner identity")
+    return owner
+
+
+def prune(destination, retention_days, *, owner, now=None, log=lambda _: None):
+    if not re.fullmatch(r"[a-f0-9]{32}", owner):
+        raise core.TransferError("Invalid automatic-backup owner identity")
+    owned_name = re.compile(r"^ubuntu-backup-auto-[A-Za-z0-9._-]+-" + owner +
+                            r"-[0-9]{8}-[0-9]{6}\.ubackup$")
     now = now or dt.datetime.now(dt.timezone.utc)
     cutoff = now.timestamp() - retention_days * 24 * 60 * 60
     deleted = []
@@ -205,7 +222,7 @@ def prune(destination, retention_days, now=None, log=lambda _: None):
             entry = path.lstat()
         except OSError:
             continue
-        if (AUTOMATIC_NAME.fullmatch(path.name) and stat.S_ISREG(entry.st_mode)
+        if (owned_name.fullmatch(path.name) and stat.S_ISREG(entry.st_mode)
                 and not stat.S_ISLNK(entry.st_mode) and entry.st_mtime < cutoff):
             path.unlink()
             deleted.append(path.name)
@@ -232,12 +249,13 @@ def run_backup(home=None, *, force=False, log=print):
         try:
             destination = check_destination(home, config["destination"], config["roots"])
             host = re.sub(r"[^A-Za-z0-9._-]+", "-", socket.gethostname()).strip("-") or "computer"
-            filename = f"ubuntu-backup-auto-{host}-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.ubackup"
+            owner = backup_owner(home)
+            filename = f"ubuntu-backup-auto-{host}-{owner}-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.ubackup"
             output = destination / filename
             inventory = core.scan_inventory(log) if config["include_apps"] else {"apt": [], "snap": [], "flatpak": [], "warnings": []}
             core.create_backup(output, home, config["roots"], inventory, config["include_gnome"],
                                log, personal_roots=config["personal_roots"])
-            deleted = prune(destination, config["retention_days"], log=log)
+            deleted = prune(destination, config["retention_days"], owner=owner, log=log)
             completed = core.now()
             _write_status(home, state="success", started=started, completed=completed,
                           filename=filename, destination=str(destination), deleted=len(deleted),

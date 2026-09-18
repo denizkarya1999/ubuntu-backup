@@ -1,3 +1,3 @@
 """Ubuntu Backup: a portable desktop migration archive."""
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"

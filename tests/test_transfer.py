@@ -304,6 +304,42 @@ class TransferTests(unittest.TestCase):
         with self.assertRaisesRegex(core.TransferError, "duplicate"):
             core.Bundle(self.archive)
 
+    def test_undo_uses_restore_order_when_clock_and_random_names_disagree(self):
+        self.put(self.source, "note", b"restored")
+        target = self.put(self.target, "note", b"original")
+        bundle = self.backup(["note"])
+        from types import SimpleNamespace
+        real_datetime = core.dt.datetime
+        class FrozenDateTime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 9, 18, 12, 0, 0, tzinfo=tz)
+        with patch.object(core.dt, "datetime", FrozenDateTime), patch.object(
+                core.uuid, "uuid4", side_effect=[SimpleNamespace(hex="ffffffff"), SimpleNamespace(hex="00000000")]):
+            core.restore_bundle(bundle, self.target, ["note"], settings=False)
+            target.write_bytes(b"between restores")
+            core.restore_bundle(bundle, self.target, ["note"], settings=False)
+        core.undo_last(self.target)
+        self.assertEqual(target.read_bytes(), b"between restores")
+        core.undo_last(self.target)
+        self.assertEqual(target.read_bytes(), b"original")
+
+    def test_legacy_recovery_remains_undoable_after_new_restore(self):
+        self.put(self.source, "note", b"restored")
+        target = self.put(self.target, "note", b"original")
+        bundle = self.backup(["note"])
+        recovery = Path(core.restore_bundle(bundle, self.target, ["note"], settings=False))
+        journal_path = recovery / "journal.json"
+        journal = json.loads(journal_path.read_text())
+        del journal["sequence"]
+        journal_path.write_bytes(core.json_bytes(journal))
+        target.write_bytes(b"between restores")
+        core.restore_bundle(bundle, self.target, ["note"], settings=False)
+        core.undo_last(self.target)
+        self.assertEqual(target.read_bytes(), b"between restores")
+        core.undo_last(self.target)
+        self.assertEqual(target.read_bytes(), b"original")
+
     def test_simultaneous_restore_blocked(self):
         with core.restore_lock(self.target):
             with self.assertRaisesRegex(core.TransferError, "already running"):
@@ -404,8 +440,9 @@ class AutomaticBackupTests(unittest.TestCase):
         self.assertEqual(calls[-1], ["disable", "--now", "ubuntu-backup-automatic.timer"])
 
     def test_retention_deletes_only_expired_app_created_backups(self):
-        old = self.destination / "ubuntu-backup-auto-laptop-20260801-020000.ubackup"
-        recent = self.destination / "ubuntu-backup-auto-laptop-20260910-020000.ubackup"
+        owner = "a" * 32
+        old = self.destination / f"ubuntu-backup-auto-laptop-{owner}-20260801-020000.ubackup"
+        recent = self.destination / f"ubuntu-backup-auto-laptop-{owner}-20260910-020000.ubackup"
         manual = self.destination / "ubuntu-backup-manual.ubackup"
         for path in (old, recent, manual):
             path.write_text("backup")
@@ -413,11 +450,31 @@ class AutomaticBackupTests(unittest.TestCase):
         os.utime(recent, (1789012800, 1789012800))
         os.utime(manual, (1577836800, 1577836800))
         now = automation.dt.datetime(2026, 9, 17, tzinfo=automation.dt.timezone.utc)
-        deleted = automation.prune(self.destination, 30, now=now)
+        deleted = automation.prune(self.destination, 30, owner=owner, now=now)
         self.assertEqual(deleted, [old.name])
         self.assertFalse(old.exists())
         self.assertTrue(recent.exists())
         self.assertTrue(manual.exists())
+
+    def test_retention_preserves_other_users_hosts_and_legacy_backups(self):
+        owner = automation.backup_owner(self.home)
+        self.assertEqual(automation.backup_owner(self.home), owner)
+        other_home = self.home.parent / "other-home"
+        other_home.mkdir()
+        other_owner = automation.backup_owner(other_home)
+        self.assertNotEqual(owner, other_owner)
+        names = [f"ubuntu-backup-auto-same-host-{other_owner}-20260101-000000.ubackup",
+                 "ubuntu-backup-auto-legacy-host-20260101-000000.ubackup",
+                 "manual.ubackup"]
+        for name in names:
+            path = self.destination / name
+            path.write_text("keep")
+            os.utime(path, (1, 1))
+        own = self.destination / f"ubuntu-backup-auto-old-hostname-{owner}-20260101-000000.ubackup"
+        own.write_text("expired")
+        os.utime(own, (1, 1))
+        self.assertEqual(automation.prune(self.destination, 30, owner=owner), [own.name])
+        self.assertTrue(all((self.destination / name).exists() for name in names))
 
     def test_background_run_writes_verified_backup_to_selected_folder(self):
         automation.save_config(self.home, self.config)
