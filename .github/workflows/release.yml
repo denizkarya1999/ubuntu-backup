@@ -25,6 +25,7 @@ jobs:
       - name: Build installer
         run: |
           /usr/bin/python3 build.py
+          /usr/bin/python3 tests/package_smoke.py
           desktop-file-validate assets/ubuntu-backup.desktop
           cd dist
           sha256sum --check SHA256SUMS

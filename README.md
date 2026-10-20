@@ -19,19 +19,27 @@ Real application screens using demonstration files, captured with version 1.2.1.
 
 ## Install
 
-Download `ubuntu-backup_1.2.2_all.deb` from
+Download the latest `.deb` installer from
 [GitHub Releases](https://github.com/denizkarya1999/ubuntu-backup/releases/latest).
-Open the downloaded package with your software installer, or run:
+Open the downloaded package with your software installer, or use APT with its
+filename (for a locally built version 1.2.3):
 
 ```sh
-sudo apt install ./ubuntu-backup_1.2.2_all.deb
+sudo apt install ./ubuntu-backup_1.2.3_all.deb
 ```
 
 Launch **Ubuntu Backup** from the applications menu. Run it as your normal user.
 Administrator authentication is requested only for software installation.
 
 Designed for Ubuntu Desktop 22.04 and newer. The package uses the distribution's
-Python, GTK 3, dconf, APT, Snap, Flatpak, and PolicyKit. The same Ubuntu release
+Python, GTK 3, dconf, APT, Snap, and PolicyKit. Flatpak is optional: the native
+`.deb` package does not require or automatically install it. You can remove
+Flatpak while keeping Ubuntu Backup installed. Flatpak app lists are scanned only
+when it is available; older backups remain readable, and their Flatpak apps stay
+unchecked and unavailable for installation until you install Flatpak separately.
+Files, settings, APT apps, and Snap apps can still be restored.
+
+The same Ubuntu release
 on both computers is recommended. Internet is needed for app installation and
 app updates, but not for backup or restore.
 
@@ -176,7 +184,7 @@ signed with a project signing key.
 python3 -m ubuntu_backup
 python3 -m unittest discover -s tests -v
 python3 build.py
-dpkg-deb --info dist/ubuntu-backup_1.2.2_all.deb
+dpkg-deb --info dist/ubuntu-backup_1.2.3_all.deb
 ```
 
 For the headless GTK and isolated GNOME integration tests:

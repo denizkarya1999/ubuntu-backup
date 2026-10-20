@@ -166,6 +166,8 @@ def install_apps(selected, log=lambda x: None):
                         command.append("--classic")
                     execute(command, log)
                 else:
+                    if not shutil.which("flatpak"):
+                        raise TransferError("Flatpak is not installed; skip this app or install Flatpak separately")
                     scope = "--" + app["scope"]
                     privilege = ["pkexec", "/usr/bin/flatpak"] if app["scope"] == "system" else ["flatpak"]
                     if app["origin"] == "flathub":

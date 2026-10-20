@@ -41,7 +41,8 @@ Section: utils
 Priority: optional
 Architecture: all
 Maintainer: denizkarya1999 <denizkarya1999@outlook.com>
-Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, python3-apt, dconf-cli, pkexec | policykit-1, flatpak, snapd
+Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, python3-apt, dconf-cli, pkexec | policykit-1, snapd
+Suggests: flatpak
 Installed-Size: {size}
 Homepage: https://github.com/denizkarya1999/ubuntu-backup
 Description: Back up and migrate an Ubuntu desktop
